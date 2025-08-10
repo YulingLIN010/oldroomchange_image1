@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>AI風格轉換小幫手</title>
+  <style>
+    body { background:#fff8f0;font-family:"Noto Sans TC",sans-serif; color:#222; }
+    .container{max-width:600px;margin:40px auto;padding:2em 1em;box-shadow:0 8px 32px #cab6a4; border-radius:24px;}
+    h2{font-size:1.8em; margin:0.2em 0 1em;}
+    label{display:block;font-weight:600; margin:1em 0 0.5em;}
+    .cute-btn{padding:0.5em 1.6em;background:#f7b84b;color:#fff;border:none;border-radius:28px;font-size:1.2em;cursor:pointer;box-shadow:0 2px 8px #f7dbac;}
+    .cute-btn:active{background:#f2921d;}
+    .preview-wrap{display:flex;gap:0.5em;align-items:flex-start;}
+    .img-box{flex:1 1 0;width:48%;background:#f4efe8;border-radius:12px;padding:8px;display:flex;flex-direction:column;align-items:center;}
+    .img-box .note{align-self:flex-start;}
+    .img-box img{
+  height: 360px;
+  width: auto;
+  object-fit: contain;
+  border-radius:10px;
+  box-shadow:0 2px 10px #ebdbd1;
+  max-width: 100%;
+}
+    .row{margin:1.3em 0;}
+    select,input[type=text]{padding:0.3em;border-radius:9px;font-size:1.1em;border:1.3px solid #f7b84b;}
+    .note{color:#f48f1c; font-size:0.96em;}
+    .hidden{display:none;}
+    #sliderWrap{margin: 1.5em 0;}
+    #sliderWrap .slider-outer{position:relative;max-width:500px;margin:auto;border-radius:16px;box-shadow:0 2px 12px #ebdbd1;}
+    #sliderWrap .slider-outer{width:100%;  background:#eee;}
+    #sliderWrap img{border-radius:16px;position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;}
+    #sliderClipWrap{transition:width 0.15s;height:100%;overflow:hidden;position:absolute;top:0;left:0;}
+    #sliderControl{appearance:none;width:100%;height:8px;background:#f7dbac;border-radius:8px;outline:none;margin:0;position:absolute;bottom:-24px;left:0;z-index:4;}
+    #sliderControl::-webkit-slider-thumb{appearance:none;width:28px;height:28px;background:#f7b84b;border-radius:50%;box-shadow:0 2px 4px #ccb999;}
+    #sliderControl::-moz-range-thumb{width:28px;height:28px;background:#f7b84b;border-radius:50%;box-shadow:0 2px 4px #ccb999;}
+    #sliderControl::-ms-thumb{width:28px;height:28px;background:#f7b84b;border-radius:50%;box-shadow:0 2px 4px #ccb999;}
+    @media (max-width:600px) {
+      .container{padding:1em 0.2em;}
+      .preview-wrap{flex-direction:column;align-items:stretch;}
+      .img-box{width:100%;margin-bottom:10px;}
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>AI 風格轉換小幫手 🏠</h2>
+
+    <label>1️⃣ 上傳照片 <span class="note">(JPG/PNG, &lt;2MB)</span></label>
+    <input type="file" id="imageInput" accept="image/png, image/jpeg" />
+    <div class="note">僅限2MB以內，若超過請用手機截圖、壓縮App或<a href="https://tinypng.com" target="_blank">TinyPNG</a>壓縮</div>
+    <div id="preview" class="row"></div>
+
+    <label>2️⃣ 選擇風格</label>
+    <select id="styleSelect"></select>
+    <div id="styleDesc" class="note"></div>
+
+    <label>3️⃣ 輸入主色系</label>
+    <input type="text" id="colorInput" placeholder="例：白＋淺灰＋木色" maxlength="16"/>
+    <div class="note">建議格式：主色＋輔色，以「＋」號分隔，例如「白＋奶茶色＋金」</div>
+
+    <div class="row">
+      <button class="cute-btn" id="genBtn">✨ 開始生成</button>
+    </div>
+    <div id="loading" class="note hidden">⏳ 正在生成，請耐心等候...</div>
+
+    <div class="row" id="compareModeBtns" style="margin-bottom:1.2em; display:none;">
+      <button class="cute-btn" id="sideBySideBtn">左右對比</button>
+      <button class="cute-btn" id="sliderBtn">滑桿比對</button>
+    </div>
+    <!-- 左右並排 -->
+    <div id="compareWrap" class="preview-wrap row hidden">
+      <div class="img-box">
+        <div class="note">原始圖片</div>
+        <img id="originalImg" src="" alt="原圖預覽"/>
+      </div>
+      <div class="img-box">
+        <div class="note">風格轉換</div>
+        <img id="styledImg" src="" alt="風格圖預覽"/>
+        <button class="cute-btn" id="downloadBtn" style="margin-top:1em;">⬇ 下載圖片</button>
+      </div>
+    </div>
+    <!-- 滑桿比對 -->
+    <div id="sliderWrap" class="hidden">
+      <div class="slider-outer">
+        <img id="sliderBefore" src="" style="z-index:1;">
+        <div id="sliderClipWrap" style="z-index:2; width:0%">
+          <img id="sliderAfter" src="">
+        </div>
+        <input type="range" min="0" max="100" value="0" id="sliderControl">
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:0.97em;color:#888;margin-top:0.4em;">
+        <span>原始</span><span>風格</span>
+      </div>
+    </div>
+    <div id="errMsg" class="note hidden" style="color:#e33;"></div>
+  </div>
+<script>
+// Helper: wait for <img> to fully load
+function waitImg(img){
+  return new Promise(res=>{
+    if(img && img.complete && img.naturalWidth>0) return res();
+    if(!img) return res();
+    img.onload = ()=>res();
+    img.onerror = ()=>res();
+  });
+}
+
+const API_BASE = 'https://chatgpt-api-oldroomchange.onrender.com';
+
+let base64img = "", styleList = [];
+const imgInput = document.getElementById('imageInput');
+const preview = document.getElementById('preview');
+const styleSelect = document.getElementById('styleSelect');
+const styleDesc = document.getElementById('styleDesc');
+const colorInput = document.getElementById('colorInput');
+const genBtn = document.getElementById('genBtn');
+const loading = document.getElementById('loading');
+const compareModeBtns = document.getElementById('compareModeBtns');
+const compareWrap = document.getElementById('compareWrap');
+const originalImg = document.getElementById('originalImg');
+const styledImg = document.getElementById('styledImg');
+const downloadBtn = document.getElementById('downloadBtn');
+const sliderWrap = document.getElementById('sliderWrap');
+const sideBySideBtn = document.getElementById('sideBySideBtn');
+const sliderBtn = document.getElementById('sliderBtn');
+const sliderBefore = document.getElementById('sliderBefore');
+const sliderAfter = document.getElementById('sliderAfter');
+const sliderClipWrap = document.getElementById('sliderClipWrap');
+const sliderControl = document.getElementById('sliderControl');
+const errMsg = document.getElementById('errMsg');
+const MAX_SIZE = 2*1024*1024;
+
+// 載入風格
+fetch(`${API_BASE}/styles`).then(r=>r.json()).then(list=>{
+  styleList=list;
+  styleSelect.innerHTML = list.map((s,i)=>
+    `<option value="${s.name}" ${i==0?'selected':''}>${s.name}</option>`
+  ).join('');
+  function getShortDesc(desc, name) {
+    if(!desc) return name;
+    let d = desc.replace(/。.*$/, '').replace(/[\r\n]/g,'').trim();
+    return d.length>10 ? d.slice(0,10)+'...' : d;
+  }
+  styleDesc.textContent = getShortDesc(list[0]?.desc||"", list[0]?.name||"");
+});
+styleSelect.onchange = ()=>{
+  const v = styleSelect.value;
+  const info = styleList.find(s=>s.name==v);
+  function getShortDesc(desc, name) {
+    if(!desc) return name;
+    let d = desc.replace(/。*$/, '').replace(/[\r\n]/g,'').trim();
+    return d.length>10 ? d.slice(0,10)+'...' : d;
+  }
+  styleDesc.textContent = getShortDesc(info?.desc||"", info?.name||"");
+};
+
+imgInput.onchange = function(e){
+  preview.innerHTML="";
+  errMsg.classList.add('hidden');
+  compareWrap.classList.add('hidden');
+  sliderWrap.classList.add('hidden');
+  compareModeBtns.style.display = 'none';
+  base64img = "";
+  const file = this.files[0];
+  if(!file) return;
+  if(!['image/jpeg','image/png'].includes(file.type)){
+    alert('❌ 僅接受JPG/PNG格式圖片！');
+    this.value="";
+    return;
+  }
+  if(file.size > MAX_SIZE){
+    alert('❌ 圖片檔案超過2MB！請使用手機截圖、調整畫質或前往 https://tinypng.com 壓縮。');
+    this.value="";
+    return;
+  }
+  if(file.size > MAX_SIZE*0.7){
+    preview.innerHTML='<div class="note">⚠️ 檔案接近上限，建議壓縮可提升速度。</div>';
+  }
+  const reader = new FileReader();
+  reader.onload = function(ev){
+    base64img = ev.target.result;
+    preview.innerHTML += `<img src="${base64img}" style="max-width:220px;max-height:150px;border-radius:12px;margin-top:10px;" alt="預覽"/>`;
+  };
+  reader.readAsDataURL(file);
+};
+
+// 送出請求
+genBtn.onclick = async function(){
+  errMsg.classList.add('hidden');
+  if(!base64img){
+    alert('請先選擇圖片！'); return;
+  }
+  if(!colorInput.value.trim()){
+    alert('請輸入主色系（例：白＋淺灰＋木色）'); return;
+  }
+  loading.classList.remove('hidden');
+  compareWrap.classList.add('hidden');
+  sliderWrap.classList.add('hidden');
+  compareModeBtns.style.display = 'none';
+  genBtn.disabled=true;
+  try{
+    const r = await fetch(`${API_BASE}/generate`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        image_base64: base64img,
+        style: styleSelect.value,
+        colors: colorInput.value
+      })
+    });
+    const resp = await r.json();
+    if(resp.status==="failed"){
+      throw new Error(resp.error||'伺服器錯誤，請稍後再試。');
+    }
+    let t = 0, maxTry=60;
+    let poll;
+    poll = setInterval(async ()=>{
+      const rs = await fetch(`${API_BASE}/status/${resp.task_id}`);
+      const j = await rs.json();
+      if(j.status==="completed"){
+        clearInterval(poll);
+        loading.classList.add('hidden');
+        showComparison(j.original_image_url, j.styled_image_url);
+        downloadBtn.onclick = ()=>downloadImg(j.styled_image_url);
+        genBtn.disabled=false;
+      }
+      if(j.status==="failed"){
+        clearInterval(poll);
+        loading.classList.add('hidden');
+        errMsg.textContent = "❌ 產生失敗："+(j.error||"未知錯誤"); errMsg.classList.remove('hidden');
+        genBtn.disabled=false;
+      }
+      if(++t > maxTry){
+        clearInterval(poll);
+        loading.classList.add('hidden');
+        errMsg.textContent = "❌ 超時，請重新上傳圖片再試。";
+        errMsg.classList.remove('hidden');
+        genBtn.disabled=false;
+      }
+    },2000);
+  }catch(e){
+    loading.classList.add('hidden');
+    errMsg.textContent = "❌ "+e.message;
+    errMsg.classList.remove('hidden');
+    genBtn.disabled=false;
+  }
+};
+
+// 顯示比對圖（優化圖片大小/對齊/滑桿起點）
+function showComparison(originalUrl, styledUrl) {
+  // Set sources
+  if (typeof API_BASE === 'undefined') { window.API_BASE = ''; }
+  originalImg.src = API_BASE + originalUrl;
+  styledImg.src   = API_BASE + styledUrl;
+  sliderBefore.src = API_BASE + originalUrl;
+  sliderAfter.src  = API_BASE + styledUrl;
+
+  Promise.all([waitImg(sliderAfter), waitImg(sliderBefore)]).then(()=> {
+    const w = sliderAfter.naturalWidth || 1024;
+    const h = sliderAfter.naturalHeight || 1024;
+    const outer = document.querySelector('#sliderWrap .slider-outer');
+    if (outer && outer.style) {
+      outer.style.aspectRatio = w + ' / ' + h;  // dynamically match image ratio
+    }
+    // Reset slider position
+    sliderClipWrap.style.width = "0%";
+    sliderControl.value = 0;
+
+    // Default show side-by-side compare
+    compareWrap.classList.add('hidden');
+    sliderWrap.classList.remove('hidden');
+    if (typeof compareModeBtns !== 'undefined' && compareModeBtns) {
+      compareModeBtns.style.display = '';
+    }
+  });
+}
+
+// 切換左右比對
+sideBySideBtn.onclick = function(){
+  compareWrap.classList.add('hidden');
+    sliderWrap.classList.remove('hidden');
+}
+// 切換滑桿比對
+sliderBtn.onclick = function(){
+  compareWrap.classList.add('hidden');
+  sliderWrap.classList.remove('hidden');
+}
+
+// 滑桿事件（同步 clip width）
+sliderControl.oninput = function(){
+  sliderClipWrap.style.width = `${this.value}%`;
+}
+
+// 圖片下載（補 API_BASE）
+function downloadImg(url){
+  fetch(API_BASE + url).then(r=>r.blob()).then(blob=>{
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = "styled_output.png";
+    document.body.appendChild(link);
+    link.click(); document.body.removeChild(link);
+  });
+}
+</script>
+</body>
+</html>
+
+
