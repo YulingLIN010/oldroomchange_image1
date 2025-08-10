@@ -1,13 +1,15 @@
 from openai import OpenAI
 import os
 import base64
-import time  # ← 必加
+import time
 
-client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'), timeout=60.0))
+client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'), timeout=60.0)
+
 def generate_image(prompt, size="1024x1024", transparent=False, retries=3, backoff=2.0):
     """
     使用 OpenAI gpt-image-1 產生 PNG 位元組。
-    transparent=True → 背景透明
+    - transparent=True  → 背景透明 PNG
+    - retries/backoff   → 失敗重試（指數退避）
     """
     last_err = None
     for attempt in range(retries):
@@ -21,9 +23,8 @@ def generate_image(prompt, size="1024x1024", transparent=False, retries=3, backo
         except Exception as e:
             last_err = e
             if attempt < retries - 1:
-                time.sleep(backoff ** attempt)
+                time.sleep(backoff * (2 ** attempt))
             else:
-                raise e
-
+                raise last_err
 
 
