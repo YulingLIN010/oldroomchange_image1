@@ -8,6 +8,8 @@ import time
 # 建議 requirements.txt：openai>=1.40.0
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+MODEL_NAME = "gpt-image-3"  # ← 這裡換成 gpt-image-3
+
 def _decode_b64_image(res):
     b64 = res.data[0].b64_json
     return base64.b64decode(b64)
@@ -29,7 +31,7 @@ def generate_image(prompt, size="1024x1024", transparent=False, retries=3, backo
     純生成：不參考原圖。透明背景可用 transparent=True。
     """
     def _call():
-        params = dict(model="gpt-image-1", prompt=prompt, size=size)
+        params = dict(model=MODEL_NAME, prompt=prompt, size=size)
         if transparent:
             params["background"] = "transparent"
         res = client.images.generate(**params)
@@ -41,7 +43,7 @@ def edit_image_with_style(image_path, prompt, size="1024x1024", transparent=Fals
     基於單一原圖做整體風格化（不使用遮罩）。
     """
     def _call():
-        params = dict(model="gpt-image-1", prompt=prompt, size=size)
+        params = dict(model=MODEL_NAME, prompt=prompt, size=size)
         if transparent:
             params["background"] = "transparent"
         with open(image_path, "rb") as img_f:
@@ -58,7 +60,7 @@ def edit_image_with_mask(image_path, mask_path, prompt, size="1024x1024", transp
     基於原圖 + 遮罩（白=可編輯，黑=保護）做局部風格化。
     """
     def _call():
-        params = dict(model="gpt-image-1", prompt=prompt, size=size)
+        params = dict(model=MODEL_NAME, prompt=prompt, size=size)
         if transparent:
             params["background"] = "transparent"
         with open(image_path, "rb") as img_f, open(mask_path, "rb") as mask_f:
