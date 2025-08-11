@@ -11,7 +11,7 @@ from utils.image_logo import add_logo
 
 UPLOAD_DIR = 'static/uploads'
 OUTPUT_DIR = 'static/output'
-LOGO_PATH = 'static/logo/LOGO.PNG'
+LOGO_PATH = 'static/logo/LOGO.png'
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
