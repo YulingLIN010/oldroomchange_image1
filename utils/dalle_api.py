@@ -8,7 +8,7 @@ import time
 # 建議 requirements.txt：openai>=1.40.0
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-MODEL_NAME = "gpt-image-3"  # ← 這裡換成 gpt-image-3
+MODEL_NAME = "gpt-image-1"  # ← 這裡換成 gpt-image-1
 
 def _decode_b64_image(res):
     b64 = res.data[0].b64_json
