@@ -143,7 +143,7 @@ def generate():
             "styled": f"/static/output/{filename}_logo.png",
             "mask": f"/static/output/{filename}_mask.png"
         }_logo.png"
-        }
+        
         return jsonify({"task_id": task_id, "status": "processing"})
     except Exception as e:
         print("[GENERAL ERROR]", traceback.format_exc())
