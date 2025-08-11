@@ -246,6 +246,18 @@ def get_result(filename):
 @app.route(f"/{MASK_FOLDER}/<path:filename>")
 def get_mask(filename):
     return send_from_directory(MASK_FOLDER, filename)
+    
+# --- 健康檢查（超輕量，Render 會定期打這個）---
+@app.get("/healthz")
+def healthz():
+    # 不查資料庫、不呼叫外部 API，單純表示服務 OK
+    return ("", 204)  # 也可改回傳 200：return {"ok": True}, 200
+
+# 如果你的 Flask 版本不支援 @app.get，改用：
+# @app.route("/healthz", methods=["GET"])
+# def healthz():
+#     return ("", 204)
+
 
 if __name__ == "__main__":
     # 預設啟動於 0.0.0.0:5000，開發時 debug=True
