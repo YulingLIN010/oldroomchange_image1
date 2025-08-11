@@ -1,6 +1,6 @@
 flask
 flask_cors
 gunicorn
-openai>=1.0.0
+openai>=1.40.0
 pillow
 numpy
