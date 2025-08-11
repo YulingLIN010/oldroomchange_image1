@@ -74,8 +74,8 @@
     <!-- 簡短風格描述（自 styles.txt 擷取第一句/前10字）-->
 
     <label>3️⃣ 輸入主色系</label>
-    <input type="text" id="colorInput" 
-           <!-- 色票格式建議：「主色＋輔色」，例：白＋淺灰＋木色。程式會將「＋」轉英文逗號給模型理解 --> placeholder="例：白＋淺灰＋木色" maxlength="16"/>
+    <!-- 色票格式建議：「主色＋輔色」，例：白＋淺灰＋木色。程式會將「＋」轉英文逗號給模型理解 -->
+<input type="text" id="colorInput" placeholder="例：白＋淺灰＋木色" maxlength="32" inputmode="text"/>
     <div class="note">建議格式：主色＋輔色，以「＋」號分隔，例如「白＋奶茶色＋金」</div>
 
     
@@ -303,7 +303,7 @@ genBtn.onclick = async function(){
     const r = await fetch(`${API_BASE}/generate`, {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify((()=>{ const mode = maskModeRadios().find(x=>x.checked)?.value || 'smart'; const payload = { image_base64: base64img, style: styleSelect.value, colors: colorInput.value, mask: mode }; if(mode==='smart'){ payload.mask_options = { margin_ratio: smartOpts.margin_ratio, edge_thresh: smartOpts.edge_thresh, window_bright_thresh: smartOpts.window_bright_thresh, dilate_px: smartOpts.dilate_px, protect_windows: smartOpts.protect_windows }; } return payload; })())
+      body:JSON.stringify((()=>{ const mode = maskModeRadios().find(x=>x.checked)?.value || 'smart'; const payload = { image_base64: base64img, style: styleSelect.value, colors: (colorInput.value||"").replace(/\s+/g," ").trim(), mask: mode }; if(mode==='smart'){ payload.mask_options = { margin_ratio: smartOpts.margin_ratio, edge_thresh: smartOpts.edge_thresh, window_bright_thresh: smartOpts.window_bright_thresh, dilate_px: smartOpts.dilate_px, protect_windows: smartOpts.protect_windows }; } return payload; })())
     });
     const resp = await r.json();
     if(resp.status==="failed"){

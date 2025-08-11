@@ -22,9 +22,15 @@ from flask_cors import CORS
 from PIL import Image, ExifTags
 import cv2
 
-from dalle_api import edit_image_with_mask
-from image_logo import add_logo
-from prompt_templates import load_styles, make_prompt
+# --- 匯入：優先 utils.*；若沒有 utils，再嘗試同層檔案 ---
+try:
+    from utils.dalle_api import edit_image_with_mask
+    from utils.image_logo import add_logo
+    from utils.prompt_templates import load_styles, make_prompt
+except ModuleNotFoundError:
+    from dalle_api import edit_image_with_mask
+    from image_logo import add_logo
+    from prompt_templates import load_styles, make_prompt
 
 app = Flask(__name__)
 CORS(app)  # 允許跨網域請求，方便前端本機或不同網域呼叫
