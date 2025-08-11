@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>AI風格轉換小幫手</title>
+  <title>AI風格轉換小幫手-Image3</title>
   <style>
     body { background:#fff8f0;font-family:"Noto Sans TC",sans-serif; color:#222; }
     .container{max-width:600px;margin:40px auto;padding:2em 1em;box-shadow:0 8px 32px #cab6a4; border-radius:24px;}
@@ -59,6 +59,41 @@
     <input type="text" id="colorInput" placeholder="例：白＋淺灰＋木色" maxlength="16"/>
     <div class="note">建議格式：主色＋輔色，以「＋」號分隔，例如「白＋奶茶色＋金」</div>
 
+    
+    <label>4️⃣ 遮罩設定（限制可編輯範圍）</label>
+    <div class="note">白=可編輯，黑=保護。建議先用「聰明遮罩」。</div>
+    <div id="maskControls" class="row" style="display:block; border:1px dashed #f7b84b; padding:10px; border-radius:10px;">
+      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+        <label><input type="radio" name="maskMode" value="smart" checked> 聰明遮罩（smart）</label>
+        <label><input type="radio" name="maskMode" value="safe_edges"> 邊緣保護（safe_edges）</label>
+        <label><input type="radio" name="maskMode" value="full"> 全圖可編輯（full）</label>
+      </div>
+      <div id="smartOpts" style="margin-top:10px;">
+        <div class="note" style="margin-bottom:6px;">進階（smart 專用）：覺得邊界還是會被改到？就把「邊緣門檻」降低、或把「膨脹像素」加大。</div>
+        <div style="display:grid; grid-template-columns: repeat(2, minmax(180px, 1fr)); gap:8px;">
+          <label>外框保護比例 margin_ratio（0.02–0.10）<br>
+            <input type="number" id="opt_margin_ratio" min="0.01" max="0.20" step="0.01" value="0.04" style="width:120px;">
+          </label>
+          <label>邊緣門檻 edge_thresh（0–255）<br>
+            <input type="number" id="opt_edge_thresh" min="0" max="255" step="1" value="28" style="width:120px;">
+          </label>
+          <label>亮區門檻 window_bright_thresh（0–255）<br>
+            <input type="number" id="opt_window_bright_thresh" min="0" max="255" step="1" value="215" style="width:120px;">
+          </label>
+          <label>膨脹像素 dilate_px（0–20）<br>
+            <input type="number" id="opt_dilate_px" min="0" max="20" step="1" value="6" style="width:120px;">
+          </label>
+          <label style="grid-column: 1 / -1;">
+            <input type="checkbox" id="opt_protect_windows" checked> 保護高亮窗/玻璃/燈具（protect_windows）
+          </label>
+        </div>
+      </div>
+      <div id="maskPreviewWrap" class="hidden" style="margin-top:10px;">
+        <div class="note">遮罩預覽（若後端回傳 mask_url 會顯示）：</div>
+        <img id="maskPreview" src="" style="max-width:100%; border-radius:10px; box-shadow:0 2px 10px #ebdbd1;">
+      </div>
+    </div>
+
     <div class="row">
       <button class="cute-btn" id="genBtn">✨ 開始生成</button>
     </div>
@@ -106,7 +141,7 @@ function waitImg(img){
   });
 }
 
-const API_BASE = 'https://chatgpt-api-oldroomchange.onrender.com';
+const API_BASE = 'https://oldroomchange-image3.onrender.com';
 
 let base64img = "", styleList = [];
 const imgInput = document.getElementById('imageInput');
@@ -130,6 +165,16 @@ const sliderClipWrap = document.getElementById('sliderClipWrap');
 const sliderControl = document.getElementById('sliderControl');
 const errMsg = document.getElementById('errMsg');
 const MAX_SIZE = 2*1024*1024;
+// Mask controls
+const maskModeRadios = () => [...document.querySelectorAll('input[name="maskMode"]')];
+const smartOpts = {
+  get margin_ratio(){ return parseFloat(document.getElementById('opt_margin_ratio').value || '0.04'); },
+  get edge_thresh(){ return parseInt(document.getElementById('opt_edge_thresh').value || '28'); },
+  get window_bright_thresh(){ return parseInt(document.getElementById('opt_window_bright_thresh').value || '215'); },
+  get dilate_px(){ return parseInt(document.getElementById('opt_dilate_px').value || '6'); },
+  get protect_windows(){ return document.getElementById('opt_protect_windows').checked; }
+};
+
 
 // 載入風格
 fetch(`${API_BASE}/styles`).then(r=>r.json()).then(list=>{
@@ -185,6 +230,17 @@ imgInput.onchange = function(e){
   reader.readAsDataURL(file);
 };
 
+
+// 切換 mask 模式時顯示/隱藏 smart 參數
+maskModeRadios().forEach(r=>{
+  r.addEventListener('change', ()=>{
+    const mode = maskModeRadios().find(x=>x.checked)?.value || 'smart';
+    document.getElementById('smartOpts').style.display = (mode === 'smart') ? '' : 'none';
+  });
+});
+// 預設 smart 顯示
+document.getElementById('smartOpts').style.display = '';
+
 // 送出請求
 genBtn.onclick = async function(){
   errMsg.classList.add('hidden');
@@ -203,11 +259,7 @@ genBtn.onclick = async function(){
     const r = await fetch(`${API_BASE}/generate`, {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
-        image_base64: base64img,
-        style: styleSelect.value,
-        colors: colorInput.value
-      })
+      body:JSON.stringify((()=>{ const mode = maskModeRadios().find(x=>x.checked)?.value || 'smart'; const payload = { image_base64: base64img, style: styleSelect.value, colors: colorInput.value, mask: mode }; if(mode==='smart'){ payload.mask_options = { margin_ratio: smartOpts.margin_ratio, edge_thresh: smartOpts.edge_thresh, window_bright_thresh: smartOpts.window_bright_thresh, dilate_px: smartOpts.dilate_px, protect_windows: smartOpts.protect_windows }; } return payload; })())
     });
     const resp = await r.json();
     if(resp.status==="failed"){
@@ -223,6 +275,14 @@ genBtn.onclick = async function(){
         loading.classList.add('hidden');
         showComparison(j.original_image_url, j.styled_image_url);
         downloadBtn.onclick = ()=>downloadImg(j.styled_image_url);
+
+        if (j.mask_url) {
+          const wrap = document.getElementById('maskPreviewWrap');
+          const mp = document.getElementById('maskPreview');
+          mp.src = API_BASE + j.mask_url;
+          wrap.classList.remove('hidden');
+        }
+
         genBtn.disabled=false;
       }
       if(j.status==="failed"){
@@ -278,8 +338,8 @@ function showComparison(originalUrl, styledUrl) {
 
 // 切換左右比對
 sideBySideBtn.onclick = function(){
-  compareWrap.classList.add('hidden');
-    sliderWrap.classList.remove('hidden');
+  sliderWrap.classList.add('hidden');
+  compareWrap.classList.remove('hidden');
 }
 // 切換滑桿比對
 sliderBtn.onclick = function(){

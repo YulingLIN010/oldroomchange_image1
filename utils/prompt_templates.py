@@ -71,7 +71,7 @@ def make_prompt(style, colors):
     style_info = next((s for s in style_list if s['name'] == style), {'desc': ''})
     style_desc = style_info['desc'] or style
 
-    prompt = f"""
+    prompt = f"""\nYou are an interior design image editor. Modify the provided image in-place to match the target style. Do NOT generate a new scene. Preserve exact geometry, perspective and camera framing from the input photo.\n
 Strictly follow all of the following rules for style conversion.
 
 1. DO NOT change or reinterpret:
@@ -102,7 +102,7 @@ DO NOT VIOLATE STRUCTURAL RULES. All spatial layout and perspective must MATCH E
 
 Style description: {style_desc}
 
-Output a single interior design image with the above constraints.
+Only modify areas inside the white mask (editable region). Do not alter black masked regions.\nOutput a single interior design image with the above constraints.
 """
     return prompt.strip()
 
