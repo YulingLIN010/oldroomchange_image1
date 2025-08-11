@@ -1,10 +1,24 @@
 <!DOCTYPE html>
+<!-- 檔案說明：
+  - 單檔前端（HTML/CSS/JS）用於與後端溝通進行「室內風格轉換」
+  - 主要流程：上傳圖片 → 選風格與色系 → 遮罩設定 → 呼叫 /generate → 輪詢 /status 顯示結果
+  - 與後端 API 對齊：GET /styles、POST /generate、GET /status/<task_id>、以及靜態檔路徑 /uploads /results /masks
+-->
+
 <html lang="zh-Hant">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>AI風格轉換小幫手-Image3</title>
+  <title>AI風格轉換小幫手</title>
   <style>
+    /*
+      樣式說明：
+      - 基底色系與卡片陰影（偏暖色）
+      - .preview-wrap 與 .img-box 用於左右比對/滑桿比對容器
+      - #sliderWrap 相關為滑桿比對外框與 thumb 樣式
+      - 響應式：<=600px 時改為直式堆疊
+    */
+
     body { background:#fff8f0;font-family:"Noto Sans TC",sans-serif; color:#222; }
     .container{max-width:600px;margin:40px auto;padding:2em 1em;box-shadow:0 8px 32px #cab6a4; border-radius:24px;}
     h2{font-size:1.8em; margin:0.2em 0 1em;}
@@ -44,24 +58,35 @@
 </head>
 <body>
   <div class="container">
-    <h2>AI 風格轉換小幫手 🏠</h2>
+    <!-- 主要內容容器：表單輸入、預覽、比對與錯誤訊息顯示 -->
+    <h2>AI 風格轉換小幫手(Image1) 🏠</h2>
 
     <label>1️⃣ 上傳照片 <span class="note">(JPG/PNG, &lt;2MB)</span></label>
     <input type="file" id="imageInput" accept="image/png, image/jpeg" />
     <div class="note">僅限2MB以內，若超過請用手機截圖、壓縮App或<a href="https://tinypng.com" target="_blank">TinyPNG</a>壓縮</div>
     <div id="preview" class="row"></div>
+    <!-- 上傳圖片後於此顯示縮圖預覽 -->
 
     <label>2️⃣ 選擇風格</label>
     <select id="styleSelect"></select>
+    <!-- 後端 /styles 回傳的風格清單將注入到此下拉選單 -->
     <div id="styleDesc" class="note"></div>
+    <!-- 簡短風格描述（自 styles.txt 擷取第一句/前10字）-->
 
     <label>3️⃣ 輸入主色系</label>
-    <input type="text" id="colorInput" placeholder="例：白＋淺灰＋木色" maxlength="16"/>
+    <input type="text" id="colorInput" 
+           <!-- 色票格式建議：「主色＋輔色」，例：白＋淺灰＋木色。程式會將「＋」轉英文逗號給模型理解 --> placeholder="例：白＋淺灰＋木色" maxlength="16"/>
     <div class="note">建議格式：主色＋輔色，以「＋」號分隔，例如「白＋奶茶色＋金」</div>
 
     
     <label>4️⃣ 遮罩設定（限制可編輯範圍）</label>
     <div class="note">白=可編輯，黑=保護。建議先用「聰明遮罩」。</div>
+    <!-- 遮罩設定區塊：
+         - smart：在 safe_edges 基礎上，加強保護亮窗與垂直線條
+         - safe_edges：保護邊緣與外框
+         - full：全圖可編輯（風險較高，可能破壞結構）
+         - 參數可微調：margin_ratio / edge_thresh / window_bright_thresh / dilate_px / protect_windows
+       -->
     <div id="maskControls" class="row" style="display:block; border:1px dashed #f7b84b; padding:10px; border-radius:10px;">
       <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
         <label><input type="radio" name="maskMode" value="smart" checked> 聰明遮罩（smart）</label>
@@ -103,7 +128,7 @@
       <button class="cute-btn" id="sideBySideBtn">左右對比</button>
       <button class="cute-btn" id="sliderBtn">滑桿比對</button>
     </div>
-    <!-- 左右並排 -->
+    <!-- 左右並排（兩張圖片固定大小並列顯示） -->
     <div id="compareWrap" class="preview-wrap row hidden">
       <div class="img-box">
         <div class="note">原始圖片</div>
@@ -115,7 +140,7 @@
         <button class="cute-btn" id="downloadBtn" style="margin-top:1em;">⬇ 下載圖片</button>
       </div>
     </div>
-    <!-- 滑桿比對 -->
+    <!-- 滑桿比對（上層圖以 clip width 方式裁切，搭配 range 控制寬度） -->
     <div id="sliderWrap" class="hidden">
       <div class="slider-outer">
         <img id="sliderBefore" src="" style="z-index:1;">
@@ -131,7 +156,13 @@
     <div id="errMsg" class="note hidden" style="color:#e33;"></div>
   </div>
 <script>
+// ===========================
+// 前端互動腳本（Vanilla JS）
+// 功能：載入風格、處理上傳、組合遮罩參數、呼叫後端、輪詢任務狀態、顯示比對、下載圖片
+// ===========================
+
 // Helper: wait for <img> to fully load
+// 等待圖片載入完成，避免尚未取得 naturalWidth/Height 就進行計算
 function waitImg(img){
   return new Promise(res=>{
     if(img && img.complete && img.naturalWidth>0) return res();
@@ -141,6 +172,9 @@ function waitImg(img){
   });
 }
 
+// 後端基底位址：
+// - 正式環境可維持雲端網址
+// - 本機測試可改為空字串 '' 或 'http://localhost:5000'
 const API_BASE = 'https://oldroomchange-image3.onrender.com';
 
 let base64img = "", styleList = [];
@@ -164,9 +198,12 @@ const sliderAfter = document.getElementById('sliderAfter');
 const sliderClipWrap = document.getElementById('sliderClipWrap');
 const sliderControl = document.getElementById('sliderControl');
 const errMsg = document.getElementById('errMsg');
+// 前端：檔案大小上限（2MB），大於上限會提示壓縮
 const MAX_SIZE = 2*1024*1024;
 // Mask controls
+// 取得 mask 單選按鈕 NodeList → 陣列
 const maskModeRadios = () => [...document.querySelectorAll('input[name="maskMode"]')];
+// smart 模式參數：即時讀取表單值（使用 Getter 確保最新）
 const smartOpts = {
   get margin_ratio(){ return parseFloat(document.getElementById('opt_margin_ratio').value || '0.04'); },
   get edge_thresh(){ return parseInt(document.getElementById('opt_edge_thresh').value || '28'); },
@@ -176,7 +213,7 @@ const smartOpts = {
 };
 
 
-// 載入風格
+// 載入風格（向 /styles 取資料，注入下拉選單；並顯示簡短描述）
 fetch(`${API_BASE}/styles`).then(r=>r.json()).then(list=>{
   styleList=list;
   styleSelect.innerHTML = list.map((s,i)=>
@@ -189,6 +226,7 @@ fetch(`${API_BASE}/styles`).then(r=>r.json()).then(list=>{
   }
   styleDesc.textContent = getShortDesc(list[0]?.desc||"", list[0]?.name||"");
 });
+// 切換風格時，更新下方的風格描述
 styleSelect.onchange = ()=>{
   const v = styleSelect.value;
   const info = styleList.find(s=>s.name==v);
@@ -200,6 +238,9 @@ styleSelect.onchange = ()=>{
   styleDesc.textContent = getShortDesc(info?.desc||"", info?.name||"");
 };
 
+// 選擇圖片時：
+// - 驗證檔案型別/大小
+// - 顯示預覽
 imgInput.onchange = function(e){
   preview.innerHTML="";
   errMsg.classList.add('hidden');
@@ -231,7 +272,7 @@ imgInput.onchange = function(e){
 };
 
 
-// 切換 mask 模式時顯示/隱藏 smart 參數
+// 切換 mask 模式時顯示/隱藏 smart 參數（非 smart 模式隱藏進階設定）
 maskModeRadios().forEach(r=>{
   r.addEventListener('change', ()=>{
     const mode = maskModeRadios().find(x=>x.checked)?.value || 'smart';
@@ -241,7 +282,10 @@ maskModeRadios().forEach(r=>{
 // 預設 smart 顯示
 document.getElementById('smartOpts').style.display = '';
 
-// 送出請求
+// 送出請求：
+// - 將 base64 圖 + 風格 + 色系 + 遮罩設定打包成 JSON
+// - 呼叫 POST /generate 取得 task_id
+// - 啟動輪詢 /status/<task_id> 等待完成
 genBtn.onclick = async function(){
   errMsg.classList.add('hidden');
   if(!base64img){
@@ -268,9 +312,11 @@ genBtn.onclick = async function(){
     let t = 0, maxTry=60;
     let poll;
     poll = setInterval(async ()=>{
+      // 每 2 秒輪詢一次任務狀態
       const rs = await fetch(`${API_BASE}/status/${resp.task_id}`);
       const j = await rs.json();
       if(j.status==="completed"){
+        // 成功：關閉 loading、顯示比對、綁定下載按鈕、顯示遮罩預覽
         clearInterval(poll);
         loading.classList.add('hidden');
         showComparison(j.original_image_url, j.styled_image_url);
@@ -286,12 +332,14 @@ genBtn.onclick = async function(){
         genBtn.disabled=false;
       }
       if(j.status==="failed"){
+        // 失敗：顯示錯誤訊息
         clearInterval(poll);
         loading.classList.add('hidden');
         errMsg.textContent = "❌ 產生失敗："+(j.error||"未知錯誤"); errMsg.classList.remove('hidden');
         genBtn.disabled=false;
       }
       if(++t > maxTry){
+        // 逾時：停止輪詢並提示
         clearInterval(poll);
         loading.classList.add('hidden');
         errMsg.textContent = "❌ 超時，請重新上傳圖片再試。";
@@ -307,7 +355,9 @@ genBtn.onclick = async function(){
   }
 };
 
-// 顯示比對圖（優化圖片大小/對齊/滑桿起點）
+// 顯示比對圖（優化圖片大小/對齊/滑桿起點）：
+// - 動態設定外框 aspect-ratio 以符合實圖比例
+// - 預設先顯示「滑桿比對」模式並露出模式切換按鈕
 function showComparison(originalUrl, styledUrl) {
   // Set sources
   if (typeof API_BASE === 'undefined') { window.API_BASE = ''; }
@@ -336,23 +386,24 @@ function showComparison(originalUrl, styledUrl) {
   });
 }
 
-// 切換左右比對
+// 切換為左右並排比對
 sideBySideBtn.onclick = function(){
   sliderWrap.classList.add('hidden');
   compareWrap.classList.remove('hidden');
 }
-// 切換滑桿比對
+// 切換為滑桿比對
 sliderBtn.onclick = function(){
   compareWrap.classList.add('hidden');
   sliderWrap.classList.remove('hidden');
 }
 
-// 滑桿事件（同步 clip width）
+// 滑桿事件（同步 clip width）：
+// 依 slider 數值（0–100）調整上層圖覆蓋寬度
 sliderControl.oninput = function(){
   sliderClipWrap.style.width = `${this.value}%`;
 }
 
-// 圖片下載（補 API_BASE）
+// 下載圖片（自 /results 補上 API_BASE 以支援本機/雲端）
 function downloadImg(url){
   fetch(API_BASE + url).then(r=>r.blob()).then(blob=>{
     const link = document.createElement('a');

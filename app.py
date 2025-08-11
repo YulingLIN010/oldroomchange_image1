@@ -1,232 +1,246 @@
+# -*- coding: utf-8 -*-
+# Flask 後端主程式（修正版）：
+# - 與前端一致的 API 介面：/styles、/generate、/status/<id>
+# - /generate 接受 JSON（image_base64, style, colors, mask, mask_options）
+# - 背景執行緒處理任務，前端用 /status 輪詢結果
+# - 內建 3 種遮罩模式：full / safe_edges / smart
+# - 自動糾正 EXIF 方向、支援靜態檔案回傳、加入 CORS
+# - 產圖後嘗試疊 LOGO（若不存在不會中斷）
 
 import os
+import io
 import uuid
+import json
+import threading
 import base64
-import traceback
-from flask import Flask, request, jsonify, send_from_directory, render_template
-from flask_cors import CORS
-from PIL import Image
+from dataclasses import dataclass
+from typing import Dict
+
 import numpy as np
-from PIL import ImageFilter, ImageOps
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
+from PIL import Image, ExifTags
+import cv2
 
-from utils.prompt_templates import make_prompt, load_styles
-from utils.dalle_api import edit_image_with_mask
-from utils.image_logo import add_logo
-
-# --- Smart mask helpers ---
-def _dilate_binary_pil(arr, iterations=2, axis=None):
-    """膨脹：用 MaxFilter 疊代。axis='x' 水平加粗；'y' 垂直加粗；None 等向。"""
-    from PIL import Image as _PILImage
-    img = _PILImage.fromarray(arr).convert("L")
-    if axis == 'x':
-        for _ in range(max(1, int(iterations))):
-            img = img.filter(ImageFilter.MaxFilter(size=3)).filter(ImageFilter.SMOOTH)
-    elif axis == 'y':
-        for _ in range(max(1, int(iterations))):
-            img = img.rotate(90, expand=True).filter(ImageFilter.MaxFilter(size=3)).rotate(-90, expand=True)
-    else:
-        for _ in range(max(1, int(iterations))):
-            img = img.filter(ImageFilter.MaxFilter(size=3))
-    return np.asarray(img)
-
-def _build_smart_mask(base_img_path, out_mask_path,
-                      margin_ratio=0.04,
-                      bright_v_thresh=215,
-                      low_sat_thresh=40,
-                      edge_thresh=28,
-                      vert_span_ratio=0.40,
-                      top_band_ratio=0.20,
-                      dilate_px_edges=6,
-                      dilate_px_vert=8,
-                      dilate_px_horz=8,
-                      protect_windows=True):
-    """結構感知遮罩：保護外框、門窗、樑柱、天花近水平強邊。白=可編輯；黑=保護。"""
-    with Image.open(base_img_path).convert("RGB") as im_color:
-        w, h = im_color.size
-        margin = max(8, int(min(w, h) * float(margin_ratio)))
-        mask = np.zeros((h, w), dtype=np.uint8)
-        mask[margin:h-margin, margin:w-margin] = 255
-
-        hsv = np.asarray(im_color.convert("HSV"))
-        H, S, V = hsv[...,0], hsv[...,1], hsv[...,2]
-        bright_bin = (V >= int(bright_v_thresh))
-        low_sat_bin = (S <= int(low_sat_thresh))
-        window_like = (bright_bin & low_sat_bin).astype(np.uint8) * 255
-        window_like = np.asarray(Image.fromarray(window_like).filter(ImageFilter.MedianFilter(size=5)))
-        window_like = _dilate_binary_pil(window_like, iterations=2)
-        if protect_windows:
-            mask = np.where(window_like > 0, 0, mask)
-
-        gray = np.asarray(ImageOps.grayscale(im_color))
-        gx = np.zeros_like(gray, dtype=np.int16); gy = np.zeros_like(gray, dtype=np.int16)
-        gx[:,1:] = gray[:,1:] - gray[:,:-1]; gy[1:,:] = gray[1:,:] - gray[:-1,:]
-        edge_mag = (np.abs(gx) + np.abs(gy)).astype(np.int16)
-        edges = (edge_mag >= int(edge_thresh)).astype(np.uint8) * 255
-
-        col_strength = (edges > 0).sum(axis=0) / float(h)
-        vertical_cols = (col_strength >= float(vert_span_ratio))
-        vert_map = np.zeros_like(edges); vert_map[:, vertical_cols] = 255
-        vert_map = _dilate_binary_pil(vert_map, iterations=max(1, dilate_px_vert//2), axis='x')
-
-        top_band_h = int(h * float(top_band_ratio))
-        row_strength = (edges[:top_band_h,:] > 0).sum(axis=1) / float(w)
-        strong_rows = (row_strength >= 0.10)
-        horz_map = np.zeros_like(edges); horz_map[:top_band_h,:][strong_rows] = 255
-        horz_map = _dilate_binary_pil(horz_map, iterations=max(1, dilate_px_horz//2), axis='y')
-
-        edges_dil = _dilate_binary_pil(edges, iterations=max(1, dilate_px_edges//2))
-        protect = np.maximum.reduce([edges_dil, vert_map, horz_map])
-        mask = np.where(protect > 0, 0, mask)
-
-        Image.fromarray(mask, mode="L").save(out_mask_path, "PNG")
-    return out_mask_path
-
-def _build_mask(base_img_path, out_mask_path, mode="safe_edges", **opts):
-    """統一遮罩接口：safe_edges / full / smart"""
-    from PIL import Image as _PILImage, ImageDraw as _ImageDraw
-    if mode == "smart":
-        # 兼容前端命名（window_bright_thresh / dilate_px）
-        bright_v = opts.get("bright_v_thresh", opts.get("window_bright_thresh", 215))
-        dil_edges = opts.get("dilate_px_edges", opts.get("dilate_px", 6))
-        dil_vert = opts.get("dilate_px_vert", dil_edges)
-        dil_horz = opts.get("dilate_px_horz", dil_edges)
-        return _build_smart_mask(base_img_path, out_mask_path,
-                                 margin_ratio=opts.get("margin_ratio", 0.04),
-                                 bright_v_thresh=bright_v,
-                                 low_sat_thresh=opts.get("low_sat_thresh", 40),
-                                 edge_thresh=opts.get("edge_thresh", 28),
-                                 vert_span_ratio=opts.get("vert_span_ratio", 0.40),
-                                 top_band_ratio=opts.get("top_band_ratio", 0.20),
-                                 dilate_px_edges=dil_edges,
-                                 dilate_px_vert=dil_vert,
-                                 dilate_px_horz=dil_horz,
-                                 protect_windows=opts.get("protect_windows", True))
-    with Image.open(base_img_path) as im:
-        w, h = im.size
-        if mode == "full":
-            mask = _PILImage.new("L", (w, h), color=255)  # 全白可編輯
-        else:
-            margin = max(12, int(min(w, h) * 0.04))
-            mask = _PILImage.new("L", (w, h), color=0)
-            draw = _ImageDraw.Draw(mask)
-            draw.rectangle([margin, margin, w-margin, h-margin], fill=255)
-        mask.save(out_mask_path, "PNG")
-    return out_mask_path
-
-# --- App setup ---
-UPLOAD_DIR = 'static/uploads'
-OUTPUT_DIR = 'static/output'
-LOGO_PATH = 'static/logo/LOGO.PNG'
-
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+from dalle_api import edit_image_with_mask
+from image_logo import add_logo
+from prompt_templates import load_styles, make_prompt
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})   # 強化CORS設定
+CORS(app)  # 允許跨網域請求，方便前端本機或不同網域呼叫
 
-# 用 dict 模擬記憶體快取任務（正式建議用DB或Redis）
-tasks = {}
+# 路徑設定
+UPLOAD_FOLDER = "uploads"
+RESULT_FOLDER = "results"
+MASK_FOLDER = "masks"
+STATIC_FOLDER = "static"
+LOGO_PATH = os.path.join(STATIC_FOLDER, "logo", "LOGO.png")
 
-@app.route("/")
-def home():
-    return render_template("frontend.html", styles=load_styles())
+# 確保資料夾存在
+for folder in [UPLOAD_FOLDER, RESULT_FOLDER, MASK_FOLDER, STATIC_FOLDER]:
+    os.makedirs(folder, exist_ok=True)
+os.makedirs(os.path.dirname(LOGO_PATH), exist_ok=True)
 
-@app.route("/generate", methods=["POST"])
-def generate():
+# === 簡易任務管理（記憶體）===
+@dataclass
+class Task:
+    status: str = "pending"   # pending | completed | failed
+    original_image_url: str = ""
+    styled_image_url: str = ""
+    mask_url: str = ""
+    error: str = ""
+
+TASKS: Dict[str, Task] = {}
+
+# === 工具：修正圖片 EXIF 旋轉 ===
+def correct_image_orientation(image: Image.Image) -> Image.Image:
     try:
-        data = request.get_json(silent=True) or {}
-        style = data.get("style")
-        colors = data.get("colors", "")
-        mask_mode = (data.get("mask") or "smart")
-        mask_opts = data.get("mask_options") or {}
+        for orientation in ExifTags.TAGS.keys():
+            if ExifTags.TAGS[orientation] == 'Orientation':
+                break
+        exif = image._getexif()
+        if exif is not None:
+            orientation_value = exif.get(orientation)
+            if orientation_value == 3:
+                image = image.rotate(180, expand=True)
+            elif orientation_value == 6:
+                image = image.rotate(270, expand=True)
+            elif orientation_value == 8:
+                image = image.rotate(90, expand=True)
+    except Exception:
+        pass
+    return image
 
-        # 讀入上傳圖片
-        image_b64_full = data.get("image_base64")
-        if not image_b64_full or "," not in image_b64_full:
-            return jsonify({"status":"failed","error":"缺少 image_base64 或格式錯誤"}), 400
-        image_b64 = image_b64_full.split(",",1)[1]
-        img_bytes = base64.b64decode(image_b64)
+# === 工具：儲存 base64 圖片到 PNG 檔 ===
+def save_base64_image(data_url: str, out_path: str):
+    """接受 dataURL 或純 base64 字串，轉存為 PNG。"""
+    if data_url.startswith("data:"):
+        b64 = data_url.split(",",1)[1]
+    else:
+        b64 = data_url
+    raw = base64.b64decode(b64)
+    img = Image.open(io.BytesIO(raw)).convert("RGB")
+    img = correct_image_orientation(img)
+    img.save(out_path, "PNG")
+    return out_path
 
-        # 檔案大小限制
-        if len(img_bytes) > 2*1024*1024:
-            return jsonify({"status":"failed", "error":"圖片超過2MB"}), 413
+# === 遮罩生成：白=可編輯；黑=保護 ===
+def build_mask(image_path: str, mode: str="smart", opts=None) -> str:
+    """依據模式輸出 L 模式遮罩 PNG，供 OpenAI 編輯 API 使用。"""
+    opts = opts or {}
+    img = cv2.imread(image_path)
+    h, w = img.shape[:2]
 
-        # 存上傳圖片
-        filename = f"{uuid.uuid4()}.png"
-        up_path = os.path.join(UPLOAD_DIR, filename)
-        with open(up_path, "wb") as f:
-            f.write(img_bytes)
+    # 可調參數（提供預設值）
+    margin_ratio = float(opts.get("margin_ratio", 0.04))           # 邊框保護比例（避免邊緣扭曲）
+    edge_thresh = int(opts.get("edge_thresh", 28))                  # 邊緣偵測阈值
+    window_bright_thresh = int(opts.get("window_bright_thresh", 215))  # 亮窗/玻璃保護阈值
+    dilate_px = int(opts.get("dilate_px", 6))                       # 稍微膨脹避免黑縫
+    protect_windows = bool(opts.get("protect_windows", True))       # 是否保護高亮區域（常見窗戶）
 
-        # 構建 prompt
+    if mode == "full":
+        # 全可編輯
+        editable = np.full((h, w), 255, dtype=np.uint8)
+    else:
+        # 邊緣 + 框線 + 高亮區域保護
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, edge_thresh, max(2*edge_thresh, edge_thresh+1))
+        protect = cv2.dilate(edges, np.ones((3,3), np.uint8), iterations=max(1, dilate_px//2))
+
+        if protect_windows:
+            bright = cv2.inRange(gray, window_bright_thresh, 255)
+            protect = cv2.bitwise_or(protect, bright)
+
+        # 影像四周保護邊框
+        m = int(max(1, round(min(h, w) * margin_ratio)))
+        protect[:m,:] = 255; protect[-m:,:] = 255; protect[:,:m] = 255; protect[:,-m:] = 255
+
+        # smart 模式：在 safe_edges 基礎上，再保護強垂直線，降低牆面歪斜機率
+        if mode == "smart":
+            vertical_sum = np.sum(edges, axis=0)
+            vertical_cols = np.where(vertical_sum > 255 * 5)[0]  # 可調門檻
+            vert_map = np.zeros_like(edges)
+            vert_map[:, vertical_cols] = 255
+            protect = cv2.bitwise_or(protect, vert_map)
+
+        # 取反：白=可編輯；黑=保護
+        editable = cv2.bitwise_not(protect)
+
+    # 微膨脹可編輯區，避免邊界鋸齒或殘留
+    if dilate_px > 0:
+        editable = cv2.dilate(editable, np.ones((3,3), np.uint8), iterations=max(1, dilate_px//3))
+
+    mask_path = os.path.join(MASK_FOLDER, f"{uuid.uuid4()}.png")
+    cv2.imwrite(mask_path, editable)
+    return mask_path
+
+# === 背景任務：呼叫 OpenAI 編輯並疊 LOGO ===
+def _work_task(task_id: str, image_path: str, mask_path: str, style: str, colors: str):
+    task = TASKS[task_id]
+    try:
+        # 產生嚴格的風格轉換 prompt
         prompt = make_prompt(style, colors)
 
-        # 產生遮罩
-        mask_path = os.path.join(OUTPUT_DIR, f"{filename}_mask.png")
-        _build_mask(up_path, mask_path, mode=mask_mode, **mask_opts)
-
-        # 使用 image edits + mask
-        try:
-            img_bytes = edit_image_with_mask(up_path, mask_path, prompt, transparent=False)
-        except Exception as e:
-            print("[OPENAI API ERROR]", traceback.format_exc())
-            return jsonify({"status":"failed", "error":f"OpenAI API failed: {e}"}), 500
-
-        # 存結果
-        gen_img_path = os.path.join(OUTPUT_DIR, f"{filename}_gen.png")
-        with open(gen_img_path, 'wb') as f:
+        # 呼叫 OpenAI 進行影像編輯
+        out_tmp = os.path.join(RESULT_FOLDER, f"{uuid.uuid4()}.png")
+        img_bytes = edit_image_with_mask(image_path=image_path, mask_path=mask_path, prompt=prompt, size="1024x1024")
+        with open(out_tmp, "wb") as f:
             f.write(img_bytes)
 
-        # 驗證產生圖
+        # 疊 LOGO（若失敗不會中斷）
+        final_path = os.path.join(RESULT_FOLDER, f"{uuid.uuid4()}.png")
         try:
-            with Image.open(gen_img_path) as img:
-                img.verify()
-        except Exception as ex:
-            print(f"[IMAGE VERIFY ERROR] {gen_img_path}", traceback.format_exc())
-            return jsonify({"status":"failed", "error": f"產生的圖片內容錯誤或損毀 ({ex})"}), 500
+            add_logo(out_tmp, LOGO_PATH, final_path)
+            styled_path = final_path
+        except Exception:
+            styled_path = out_tmp
 
-        # 加 LOGO
-        logo_img_path = os.path.join(OUTPUT_DIR, f"{filename}_logo.png")
-        try:
-            add_logo(gen_img_path, LOGO_PATH, logo_img_path)
-        except Exception as ex:
-            print(f"[ADD LOGO ERROR]", traceback.format_exc())
-            return jsonify({"status":"failed", "error": f"加 LOGO 失敗：{ex}"}), 500
-
-        # 回傳任務 id
-        task_id = filename.split('.')[0]
-        tasks[task_id] = {
-            "original": f"/static/uploads/{filename}",
-            "styled": f"/static/output/{filename}_logo.png",
-            "mask": f"/static/output/{filename}_mask.png"
-        }
-        return jsonify({"task_id": task_id, "status": "processing"})
+        # 更新任務狀態
+        task.status = "completed"
+        task.original_image_url = f"/{UPLOAD_FOLDER}/{os.path.basename(image_path)}"
+        task.styled_image_url = f"/{RESULT_FOLDER}/{os.path.basename(styled_path)}"
+        task.mask_url = f"/{MASK_FOLDER}/{os.path.basename(mask_path)}"
     except Exception as e:
-        print("[GENERAL ERROR]", traceback.format_exc())
-        return jsonify({"status": "failed", "error": str(e)}), 500
+        task.status = "failed"
+        task.error = str(e)
 
-@app.route("/status/<task_id>")
-def status(task_id):
-    info = tasks.get(task_id)
-    if not info:
-        return jsonify({"status":"processing"})
-    return jsonify({
-        "status": "completed",
-        "original_image_url": info["original"],
-        "styled_image_url": info["styled"],
-        "mask_url": info.get("mask")
-    })
-
-@app.route('/static/<path:filename>')
-def static_files(filename):
-    return send_from_directory('static', filename)
-
-@app.route('/styles')
-def styles():
+# === API: 讀取風格清單 ===
+@app.route("/styles", methods=["GET"])
+def styles_endpoint():
     return jsonify(load_styles())
 
-@app.route('/healthz')
-def healthz():
-    return jsonify({'ok': True}), 200
+# === API: 發佈生成任務 ===
+@app.route("/generate", methods=["POST"])
+def generate_endpoint():
+    """
+    需求 JSON 格式：
+    {
+      "image_base64": "data:image/png;base64,... 或 純 base64",
+      "style": "北歐風",
+      "colors": "藍＋金",
+      "mask": "smart" | "safe_edges" | "full",
+      "mask_options": { ... 可選 參數 ... }
+    }
+    回傳：{"status":"queued","task_id":"..."}，前端用 /status/<id> 輪詢。
+    """
+    try:
+        data = request.get_json(force=True, silent=False) or {}
+        image_b64 = data.get("image_base64")
+        style = data.get("style", "")
+        colors = data.get("colors", "")
+        mask_mode = data.get("mask", "smart")
+        mask_opts = data.get("mask_options", {})
+
+        if not image_b64:
+            return jsonify({"status":"failed","error":"image_base64 is required"}), 400
+        if not style or not colors:
+            return jsonify({"status":"failed","error":"style and colors are required"}), 400
+
+        # 儲存輸入圖片
+        img_name = f"{uuid.uuid4()}.png"
+        img_path = os.path.join(UPLOAD_FOLDER, img_name)
+        save_base64_image(image_b64, img_path)
+
+        # 產生遮罩
+        mask_path = build_mask(img_path, mode=mask_mode, opts=mask_opts)
+
+        # 建立任務並在背景執行
+        task_id = str(uuid.uuid4())
+        TASKS[task_id] = Task(status="pending")
+        th = threading.Thread(target=_work_task, args=(task_id, img_path, mask_path, style, colors), daemon=True)
+        th.start()
+
+        return jsonify({"status":"queued","task_id":task_id})
+    except Exception as e:
+        return jsonify({"status":"failed","error":str(e)}), 500
+
+# === API: 查詢任務狀態 ===
+@app.route("/status/<task_id>", methods=["GET"])
+def status_endpoint(task_id):
+    t = TASKS.get(task_id)
+    if not t:
+        return jsonify({"status":"failed","error":"task not found"}), 404
+    return jsonify({
+        "status": t.status,
+        "original_image_url": t.original_image_url,
+        "styled_image_url": t.styled_image_url,
+        "mask_url": t.mask_url,
+        "error": t.error
+    })
+
+# === 靜態檔案服務（讓前端能直接載圖）===
+@app.route(f"/{UPLOAD_FOLDER}/<path:filename>")
+def get_upload(filename):
+    return send_from_directory(UPLOAD_FOLDER, filename)
+
+@app.route(f"/{RESULT_FOLDER}/<path:filename>")
+def get_result(filename):
+    return send_from_directory(RESULT_FOLDER, filename)
+
+@app.route(f"/{MASK_FOLDER}/<path:filename>")
+def get_mask(filename):
+    return send_from_directory(MASK_FOLDER, filename)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    # 預設啟動於 0.0.0.0:5000，開發時 debug=True
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)

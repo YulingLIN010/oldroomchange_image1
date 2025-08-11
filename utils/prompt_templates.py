@@ -1,6 +1,12 @@
+# -*- coding: utf-8 -*-
+# 本模組負責：
+# 1) 將常見「風格名稱」與「顏色中文」對應到英文描述，便於餵給模型；
+# 2) 從 styles.txt 讀取風格清單（可擴充）；
+# 3) 產生嚴格的室內風格轉換 prompt，強調「只改風格、不改結構與視角」。
+
 import os
 
-# 風格中→英文對照（可依你的13種需求擴充）
+# 常見室內風格（中文 => 英文）
 STYLE_EN_MAP = {
     "北歐風": "Scandinavian style",
     "工業風": "Industrial style",
@@ -17,6 +23,7 @@ STYLE_EN_MAP = {
     "美式風": "American style",
 }
 
+# 常見顏色中文 => 英文
 COLOR_EN_MAP = {
     "白": "white", "奶油白": "cream white", "灰": "gray", "藍": "blue",
     "金": "gold", "米灰": "beige", "木色": "wood", "淺藍": "light blue",
@@ -26,22 +33,32 @@ COLOR_EN_MAP = {
 }
 
 def cn_color_to_en(color_str):
-    """將中文色系描述轉為英文，用英文逗號分隔"""
+    """
+    將中文色票字串轉成英文，並把「＋ / +」替換成英文逗號，利於模型解析多色系。
+    例如：「藍＋金」=> "blue, gold"
+    """
     result = color_str
-    color_items = sorted(COLOR_EN_MAP.items(), key=lambda x: -len(x[0]))
+    color_items = sorted(COLOR_EN_MAP.items(), key=lambda x: -len(x[0]))  # 先比對長詞，避免子字串誤替換
     for cn, en in color_items:
         result = result.replace(cn, en)
     result = result.replace("＋", ", ").replace("+", ", ")
     return result
 
 def load_styles():
-    """解析 styles.txt，跳過#註解，取得風格中文名稱與簡介（供前端用）"""
+    """
+    讀取 styles.txt，輸出 [{name, desc}] 清單。
+    - 若找不到檔案，就用 STYLE_EN_MAP 的 key 當作預設風格清單。
+    - styles.txt 的格式：以星號 * 開頭為一個條目，內含名稱與描述段落。
+    """
+    path = 'styles.txt'
+    if not os.path.exists(path):
+        return [{"name": k, "desc": k} for k in STYLE_EN_MAP.keys()]
     styles = []
-    with open('styles.txt', encoding='utf-8') as f:
+    with open(path, encoding='utf-8') as f:
         block = []
         for line in f:
             if line.strip().startswith("#"):
-                continue  # 跳過註解行
+                continue
             if line.startswith('*'):
                 if block:
                     styles.append(''.join(block))
@@ -52,26 +69,31 @@ def load_styles():
     result = []
     for s in styles:
         name = s.split('\n')[0].replace('*', '').strip()
+        # 嘗試從段落中撈一行當作簡短描述
         desc = ""
         for l in s.split('\n'):
             if "核心" in l or "設計理念" in l or "特色" in l:
                 desc = l.replace('設計理念', '').replace('特色', '').replace('核心：', '').replace('：', '').strip()
                 break
-        result.append({
-            'name': name,
-            'desc': desc[:10] if desc else name
-        })
+        result.append({'name': name, 'desc': (desc[:10] if desc else name)})
     return result
 
 def make_prompt(style, colors):
-    """自動中翻英，並輸出條列英文 prompt，DALL·E 最佳化用"""
+    """
+    組合最終給模型的指令文字：
+    - 強調「保留原圖視角、布局、深度與結構」
+    - 僅以表面材質/家具/燈具等做風格轉換
+    - 使用者選的風格與色系會轉換成英文以便模型理解
+    """
     style_en = STYLE_EN_MAP.get(style, style)
     colors_en = cn_color_to_en(colors)
     style_list = load_styles()
     style_info = next((s for s in style_list if s['name'] == style), {'desc': ''})
     style_desc = style_info['desc'] or style
 
-    prompt = f"""\nYou are an interior design image editor. Modify the provided image in-place to match the target style. Do NOT generate a new scene. Preserve exact geometry, perspective and camera framing from the input photo.\n
+    prompt = f"""
+You are an interior design image editor. Modify the provided image in-place to match the target style. Do NOT generate a new scene. Preserve exact geometry, perspective and camera framing from the input photo.
+
 Strictly follow all of the following rules for style conversion.
 
 1. DO NOT change or reinterpret:
@@ -84,10 +106,10 @@ Strictly follow all of the following rules for style conversion.
 2. DO NOT crop, shift, rotate, or reframe the original image.
 3. DO NOT remove, redraw, or reinterpret the spatial boundaries or depth.
 4. ONLY overlay and replace the following surface-level elements to match the "{style_en}" interior design style with the color palette: {colors_en}.
-    - furniture (must be consistent with {style_en} aesthetics; use built-in units where appropriate)
-    - wall finishes (e.g., texture, paint, decorative panels)
-    - ceiling treatments (e.g., trim, lighting layout)
-    - flooring materials (e.g., wood, tile, or concrete matching the style)
+    - furniture (consistent with {style_en} aesthetics; use built-in units where appropriate)
+    - wall finishes (texture, paint, decorative panels)
+    - ceiling treatments (trim, lighting layout)
+    - flooring materials (wood, tile, or concrete matching the style)
     - lighting fixtures (ceiling, wall-mounted, or floor types that suit the style)
     - door panel surface finish (but NEVER change door location or dimensions)
 
@@ -98,11 +120,11 @@ Strictly follow all of the following rules for style conversion.
 9. Built-in cabinetry is mandatory for all major furniture pieces.
 10. Maintain spatial realism, lighting accuracy, and natural shadows.
 
-DO NOT VIOLATE STRUCTURAL RULES. All spatial layout and perspective must MATCH EXACTLY the original photograph.
+DO NOT VIOLATE STRUCTURAL RULES. The spatial layout and perspective must MATCH EXACTLY the original photograph.
 
 Style description: {style_desc}
 
-Only modify areas inside the white mask (editable region). Do not alter black masked regions.\nOutput a single interior design image with the above constraints.
+Only modify areas inside the white mask (editable region). Do not alter black masked regions.
+Output a single interior design image with the above constraints.
 """
-    return prompt.strip()
-
+    return prompt
