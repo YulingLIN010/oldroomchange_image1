@@ -370,7 +370,8 @@ def upload_mask():
     fname = f"user_{uuid.uuid4().hex}.png"
     fpath = os.path.join(user_dir, fname)
     request.files["mask"].save(fpath)
-    return jsonify({"maskUrl": _abs_url(f"/jobs/{job.id}/masks/user/{fname}")})# ==== API: /render/furniture-edit ====
+    return jsonify({"maskUrl": _abs_url(f"/jobs/{job.id}/masks/user/{fname}")})
+# ==== API: /render/furniture-edit ====
 @app.post("/render/furniture-edit")
 def furniture_edit():
     """
@@ -384,19 +385,6 @@ def furniture_edit():
     }
     """
     data = request.get_json(force=True, silent=False)
-
-    # --- Compatibility: accept { operations:[{type, mask, spec, color}] } payload from frontend ---
-    if not data.get("mask") and isinstance(data.get("operations"), list) and data["operations"]:
-        op0 = data["operations"][0] or {}
-        # Map fields to legacy keys
-        if not data.get("type") and op0.get("type"):
-            data["type"] = op0.get("type")
-        if not data.get("mask") and op0.get("mask"):
-            data["mask"] = op0.get("mask")
-        if not data.get("spec") and op0.get("spec"):
-            data["spec"] = op0.get("spec")
-        if not data.get("color") and op0.get("color"):
-            data["color"] = op0.get("color")
     job_id = (data.get("jobId") or "").strip()
     if not job_id:
         return jsonify({"error": "jobId required"}), 400
