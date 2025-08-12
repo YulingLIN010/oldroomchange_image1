@@ -1,420 +1,518 @@
 <!DOCTYPE html>
-<!-- 檔案說明：
-  - 單檔前端（HTML/CSS/JS）用於與後端溝通進行「室內風格轉換」
-  - 主要流程：上傳圖片 → 選風格與色系 → 遮罩設定 → 呼叫 /generate → 輪詢 /status 顯示結果
-  - 與後端 API 對齊：GET /styles、POST /generate、GET /status/<task_id>、以及靜態檔路徑 /uploads /results /masks
--->
-
 <html lang="zh-Hant">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>AI風格轉換小幫手</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>舊屋換新風格（照片上傳版）</title>
   <style>
-    /*
-      樣式說明：
-      - 基底色系與卡片陰影（偏暖色）
-      - .preview-wrap 與 .img-box 用於左右比對/滑桿比對容器
-      - #sliderWrap 相關為滑桿比對外框與 thumb 樣式
-      - 響應式：<=600px 時改為直式堆疊
-    */
-
-    body { background:#fff8f0;font-family:"Noto Sans TC",sans-serif; color:#222; }
-    .container{max-width:600px;margin:40px auto;padding:2em 1em;box-shadow:0 8px 32px #cab6a4; border-radius:24px;}
-    h2{font-size:1.8em; margin:0.2em 0 1em;}
-    label{display:block;font-weight:600; margin:1em 0 0.5em;}
-    .cute-btn{padding:0.5em 1.6em;background:#f7b84b;color:#fff;border:none;border-radius:28px;font-size:1.2em;cursor:pointer;box-shadow:0 2px 8px #f7dbac;}
-    .cute-btn:active{background:#f2921d;}
-    .preview-wrap{display:flex;gap:0.5em;align-items:flex-start;}
-    .img-box{flex:1 1 0;width:48%;background:#f4efe8;border-radius:12px;padding:8px;display:flex;flex-direction:column;align-items:center;}
-    .img-box .note{align-self:flex-start;}
-    .img-box img{
-  height: 360px;
-  width: auto;
-  object-fit: contain;
-  border-radius:10px;
-  box-shadow:0 2px 10px #ebdbd1;
-  max-width: 100%;
-}
-    .row{margin:1.3em 0;}
-    select,input[type=text]{padding:0.3em;border-radius:9px;font-size:1.1em;border:1.3px solid #f7b84b;}
-    .note{color:#f48f1c; font-size:0.96em;}
-    .hidden{display:none;}
-    #sliderWrap{margin: 1.5em 0;}
-    #sliderWrap .slider-outer{position:relative;max-width:500px;margin:auto;border-radius:16px;box-shadow:0 2px 12px #ebdbd1;}
-    #sliderWrap .slider-outer{width:100%;  background:#eee;}
-    #sliderWrap img{border-radius:16px;position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;}
-    #sliderClipWrap{transition:width 0.15s;height:100%;overflow:hidden;position:absolute;top:0;left:0;}
-    #sliderControl{appearance:none;width:100%;height:8px;background:#f7dbac;border-radius:8px;outline:none;margin:0;position:absolute;bottom:-24px;left:0;z-index:4;}
-    #sliderControl::-webkit-slider-thumb{appearance:none;width:28px;height:28px;background:#f7b84b;border-radius:50%;box-shadow:0 2px 4px #ccb999;}
-    #sliderControl::-moz-range-thumb{width:28px;height:28px;background:#f7b84b;border-radius:50%;box-shadow:0 2px 4px #ccb999;}
-    #sliderControl::-ms-thumb{width:28px;height:28px;background:#f7b84b;border-radius:50%;box-shadow:0 2px 4px #ccb999;}
-    @media (max-width:600px) {
-      .container{padding:1em 0.2em;}
-      .preview-wrap{flex-direction:column;align-items:stretch;}
-      .img-box{width:100%;margin-bottom:10px;}
+    :root{
+      --bg:#FFF8F0;
+      --card:#FFFFFF;
+      --text:#1F2D3D;
+      --muted:#6B7280;
+      --line:#F4D2D2;
+      --brand:#FF7EB6;
+      --brand-2:#64C2FF;
+      --ok:#35B36B;
+      --warn:#F6B01A;
     }
+    *{box-sizing:border-box}
+    body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans TC",Arial,sans-serif;margin:0;padding:24px;background:linear-gradient(180deg,#FFF8F0 0%, #FFEFF7 100%);color:var(--text)}
+    h1{font-size:22px;margin:0 0 16px}
+    h2{font-size:16px;margin:24px 0 8px}
+    .card{background:var(--card);border:2px solid var(--line);border-radius:16px;padding:16px;margin-bottom:16px;box-shadow:0 6px 20px rgba(255,126,182,.15)}
+    label{display:block;margin:8px 0 4px;font-size:12px;color:var(--muted)}
+    input,select,button,textarea{background:#fff;color:var(--text);border:2px solid var(--line);border-radius:12px;padding:10px 12px;font-size:14px}
+    input[type="color"]{padding:0;height:40px;width:60px;border-radius:10px}
+    button{cursor:pointer;background:linear-gradient(90deg,var(--brand),var(--brand-2));color:#fff;border:none}
+    button.ghost{background:#fff;color:var(--text);border:2px dashed var(--line)}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    .col{flex:1;min-width:260px}
+    .imgwall{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
+    .imgwall figure{margin:0;background:#fff;border:2px solid var(--line);border-radius:12px;overflow:hidden}
+    .imgwall img{display:block;width:100%;height:auto}
+    .badge{display:inline-block;background:var(--brand-2);border:2px solid var(--line);border-radius:999px;padding:2px 10px;font-size:12px;margin-left:6px;color:#053B5C}
+    .small{font-size:12px;color:var(--muted)}
+    .tip{background:#FFF2F8;border:2px solid #FFD5E8;border-radius:12px;padding:10px;color:#7A294A}
+    .ok{color:var(--ok)} .warn{color:var(--warn)}
+    .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .toolbar .chip{background:#FFF2F8;border:2px solid #FFD5E8;border-radius:999px;padding:4px 10px;font-size:12px;color:#7A294A}
+    .kbd{display:inline-block;border:2px solid var(--line);border-bottom-width:4px;border-radius:8px;padding:0 6px;background:#fff;font-weight:700}
+    canvas{max-width:100%;border:2px dashed var(--line);border-radius:12px;background:#fff}
+
+    /* palette cards */
+    .palgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin:6px 0 10px}
+    .palcard{border:2px solid var(--line);border-radius:12px;overflow:hidden;background:#fff;cursor:pointer;transition:.15s box-shadow,.15s transform}
+    .palcard:hover{box-shadow:0 6px 16px rgba(100,194,255,.25);transform:translateY(-1px)}
+    .palcard.selected{outline:3px solid var(--brand-2)}
+    .palcard .name{padding:8px 10px;font-size:12px;color:var(--muted);border-top:2px solid var(--line);display:flex;justify-content:space-between;align-items:center}
+    .swrow{display:flex;height:38px}
+    .sw{flex:1}
+    .sw label{display:block;font-size:10px;margin:0;padding:4px 6px;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.25)}
+    .btnline{display:flex;gap:8px;align-items:center;margin:6px 0}
+
+    /* segmented tabs */
+    .segline{display:inline-flex;border:2px solid var(--line);border-radius:999px;overflow:hidden}
+    .seg{background:#fff;color:var(--text);border:0;padding:8px 12px}
+    .seg.active{background:linear-gradient(90deg,var(--brand),var(--brand-2));color:#fff}
   </style>
 </head>
 <body>
-  <div class="container">
-    <!-- 主要內容容器：表單輸入、預覽、比對與錯誤訊息顯示 -->
-    <h2>AI 風格轉換小幫手(Image1) 🏠</h2>
+  <h1>舊屋換新風格（照片上傳版）<span id="status" class="badge">待上傳</span></h1>
 
-    <label>1️⃣ 上傳照片 <span class="note">(JPG/PNG, &lt;2MB)</span></label>
-    <input type="file" id="imageInput" accept="image/png, image/jpeg" />
-    <div class="note">僅限2MB以內，若超過請用手機截圖、壓縮App或<a href="https://tinypng.com" target="_blank">TinyPNG</a>壓縮</div>
-    <div id="preview" class="row"></div>
-    <!-- 上傳圖片後於此顯示縮圖預覽 -->
-
-    <label>2️⃣ 選擇風格</label>
-    <select id="styleSelect"></select>
-    <!-- 後端 /styles 回傳的風格清單將注入到此下拉選單 -->
-    <div id="styleDesc" class="note"></div>
-    <!-- 簡短風格描述（自 styles.txt 擷取第一句/前10字）-->
-
-    <label>3️⃣ 輸入主色系</label>
-    <!-- 色票格式建議：「主色＋輔色」，例：白＋淺灰＋木色。程式會將「＋」轉英文逗號給模型理解 -->
-<input type="text" id="colorInput" placeholder="例：白＋淺灰＋木色" maxlength="32" inputmode="text"/>
-    <div class="note">建議格式：主色＋輔色，以「＋」號分隔，例如「白＋奶茶色＋金」</div>
-
-    
-    <label>4️⃣ 遮罩設定（限制可編輯範圍）</label>
-    <div class="note">白=可編輯，黑=保護。建議先用「聰明遮罩」。</div>
-    <!-- 遮罩設定區塊：
-         - smart：在 safe_edges 基礎上，加強保護亮窗與垂直線條
-         - safe_edges：保護邊緣與外框
-         - full：全圖可編輯（風險較高，可能破壞結構）
-         - 參數可微調：margin_ratio / edge_thresh / window_bright_thresh / dilate_px / protect_windows
-       -->
-    <div id="maskControls" class="row" style="display:block; border:1px dashed #f7b84b; padding:10px; border-radius:10px;">
-      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-        <label><input type="radio" name="maskMode" value="smart" checked> 聰明遮罩（smart）</label>
-        <label><input type="radio" name="maskMode" value="safe_edges"> 邊緣保護（safe_edges）</label>
-        <label><input type="radio" name="maskMode" value="full"> 全圖可編輯（full）</label>
-      </div>
-      <div id="smartOpts" style="margin-top:10px;">
-        <div class="note" style="margin-bottom:6px;">進階（smart 專用）：覺得邊界還是會被改到？就把「邊緣門檻」降低、或把「膨脹像素」加大。</div>
-        <div style="display:grid; grid-template-columns: repeat(2, minmax(180px, 1fr)); gap:8px;">
-          <label>外框保護比例 margin_ratio（0.02–0.10）<br>
-            <input type="number" id="opt_margin_ratio" min="0.01" max="0.20" step="0.01" value="0.04" style="width:120px;">
-          </label>
-          <label>邊緣門檻 edge_thresh（0–255）<br>
-            <input type="number" id="opt_edge_thresh" min="0" max="255" step="1" value="28" style="width:120px;">
-          </label>
-          <label>亮區門檻 window_bright_thresh（0–255）<br>
-            <input type="number" id="opt_window_bright_thresh" min="0" max="255" step="1" value="215" style="width:120px;">
-          </label>
-          <label>膨脹像素 dilate_px（0–20）<br>
-            <input type="number" id="opt_dilate_px" min="0" max="20" step="1" value="6" style="width:120px;">
-          </label>
-          <label style="grid-column: 1 / -1;">
-            <input type="checkbox" id="opt_protect_windows" checked> 保護高亮窗/玻璃/燈具（protect_windows）
-          </label>
-        </div>
-      </div>
-      <div id="maskPreviewWrap" class="hidden" style="margin-top:10px;">
-        <div class="note">遮罩預覽（若後端回傳 mask_url 會顯示）：</div>
-        <img id="maskPreview" src="" style="max-width:100%; border-radius:10px; box-shadow:0 2px 10px #ebdbd1;">
-      </div>
-    </div>
-
+  <div class="card">
+    <h2>1) 上傳原圖 → 自動偵測（結構＋深度）</h2>
     <div class="row">
-      <button class="cute-btn" id="genBtn">✨ 開始生成</button>
-    </div>
-    <div id="loading" class="note hidden">⏳ 正在生成，請耐心等候...</div>
-
-    <div class="row" id="compareModeBtns" style="margin-bottom:1.2em; display:none;">
-      <button class="cute-btn" id="sideBySideBtn">左右對比</button>
-      <button class="cute-btn" id="sliderBtn">滑桿比對</button>
-    </div>
-    <!-- 左右並排（兩張圖片固定大小並列顯示） -->
-    <div id="compareWrap" class="preview-wrap row hidden">
-      <div class="img-box">
-        <div class="note">原始圖片</div>
-        <img id="originalImg" src="" alt="原圖預覽"/>
+      <div class="col">
+        <label>原始室內照片</label>
+        <input type="file" id="fileInput" accept="image/*"/>
+<p class="small">上傳限制：原始照片 <b>2MB 以內</b>（若過大請先壓縮）</p>
+        <button id="btnAnalyze">送出 /analyze</button>
+        <p class="small">支援 JPG / PNG，較大圖會自動等比處理。</p>
       </div>
-      <div class="img-box">
-        <div class="note">風格轉換</div>
-        <img id="styledImg" src="" alt="風格圖預覽"/>
-        <button class="cute-btn" id="downloadBtn" style="margin-top:1em;">⬇ 下載圖片</button>
+      <div class="col">
+        <label>jobId</label><input id="jobId" placeholder="尚未產生" readonly/>
       </div>
     </div>
-    <!-- 滑桿比對（上層圖以 clip width 方式裁切，搭配 range 控制寬度） -->
-    <div id="sliderWrap" class="hidden">
-      <div class="slider-outer">
-        <img id="sliderBefore" src="" style="z-index:1;">
-        <div id="sliderClipWrap" style="z-index:2; width:0%">
-          <img id="sliderAfter" src="">
-        </div>
-        <input type="range" min="0" max="100" value="0" id="sliderControl">
-      </div>
-      <div style="display:flex;justify-content:space-between;font-size:0.97em;color:#888;margin-top:0.4em;">
-        <span>原始</span><span>風格</span>
-      </div>
-    </div>
-    <div id="errMsg" class="note hidden" style="color:#e33;"></div>
   </div>
+
+  <div class="card">
+    <h2>2) 遮罩人工修正（務必鎖住結構，只放開表面可改區）</h2>
+    <div class="row">
+      <div class="col">
+        <div class="tip">
+          <b>如何畫？</b><br/>
+          • <span class="ok">可改</span>：牆面塗料/飾板、天花、地坪、燈具、<b>可移動家具</b>（櫃、沙發、桌椅、床、窗簾等）。<br/>
+          • <span class="warn">必鎖</span>：<b>樑、柱、牆體、門窗</b>（含窗框）、固定中島、樓梯、結構開口位置與尺寸。<br/>
+          • 建議：邊緣留 3–5px 緩衝避免滲色；先大筆刷勾輪廓，再小筆修邊。<br/>
+          • 快捷鍵：<span class="kbd">E</span> 可改、<span class="kbd">R</span> 鎖定、<span class="kbd">Z</span> 復原、<span class="kbd">Y</span> 重做。<br/>
+          • 送出前請放大檢查牆角、門框四邊、窗台、樑柱交界是否鎖好。
+        </div>
+        <div class="toolbar" style="margin-top:8px">
+          <span class="chip">筆刷半徑：<span id="brushVal">20</span>px</span>
+          <input type="range" id="brush" min="6" max="80" value="20" style="width:180px"/>
+          <button class="ghost" data-tool="unlock">可改區域（E）</button>
+          <button class="ghost" data-tool="lock">鎖定區域（R）</button>
+          <button class="ghost" id="btnUndo">復原（Z）</button>
+          <button class="ghost" id="btnRedo">重做（Y）</button>
+          <button id="btnSaveMask">上傳修正遮罩 /masks/save</button>
+        </div>
+      </div>
+      <div class="col">
+        <div class="toolbar" style="margin:8px 0">
+          <button class="ghost" id="btnZoomOut">縮小 -</button>
+          <button class="ghost" id="btnZoomIn">放大 +</button>
+          <button class="ghost" id="btnZoomReset">重置視圖</button>
+          <span class="chip">遮罩顯示透明度：<span id="opVal">35</span>%</span>
+          <input type="range" id="overlayOpacity" min="0" max="90" value="35" style="width:140px"/>
+          <button class="ghost" id="btnToggleEdges">顯示/隱藏邊緣</button>
+          <span class="chip">邊緣門檻：<span id="thrVal">60</span></span>
+          <input type="range" id="edgeThr" min="20" max="140" value="60" style="width:140px"/>
+          <span class="chip">保護半徑：<span id="radVal">3</span>px</span>
+          <input type="range" id="edgeRad" min="1" max="6" value="3" style="width:140px"/>
+          <button class="ghost" id="btnProtectEdges">一鍵保護邊緣</button>
+          <button class="ghost" id="btnCleanSpecks">自動清理小雜點</button>
+          <button class="ghost" id="btnSmartFix">邊緣智慧修補</button>
+        </div>
+        <div id="canvasWrap" style="position:relative; width:100%; max-width:100%; border-radius:12px; overflow:hidden; border:2px dashed var(--line); background:#fff">
+          <canvas id="maskCanvas" width="0" height="0"></canvas>
+          <canvas id="uiCanvas" width="0" height="0" style="position:absolute; left:0; top:0; pointer-events:none"></canvas>
+        </div>
+        <p class="small">提示：滑鼠滾輪可縮放；按住 <span class="kbd">Space</span> 拖曳可平移。綠色筆＝<b>可改</b>（擦成透明），紅色筆＝<b>鎖定</b>（補回白）。</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>3) 選 1–3 風格（同色系）→ 批次生成（預覽含 LOGO）</h2>
+    <div class="row">
+      <div class="col">
+        <label>可選風格（最多 3）</label>
+        <select id="styleSelect" multiple size="6"></select>
+      </div>
+      <div class="col">
+        <label>色系來源</label>
+        <div class="segline" style="margin-bottom:8px">
+          <button class="seg active" id="tabPreset">色卡</button>
+          <button class="seg" id="tabCustom">自訂</button>
+        </div>
+
+        <div id="palettePreset">
+          <div class="btnline">
+            <button class="ghost" id="btnRandPal">隨機推薦一組</button>
+            <span class="small">點一下色卡即可套用；如果要手動微調，請切換到「自訂」。</span>
+          </div>
+          <div id="paletteGrid" class="palgrid"></div>
+        </div>
+
+        <div id="paletteCustom" style="display:none">
+          <div class="row">
+            <div><span class="small">主色</span><br/><input type="color" id="cMain" value="#1E3A8A"/></div>
+            <div><span class="small">配1</span><br/><input type="color" id="c1" value="#D4AF37"/></div>
+            <div><span class="small">配2</span><br/><input type="color" id="c2" value="#ECECEC"/></div>
+            <div><span class="small">配3</span><br/><input type="color" id="c3" value="#7C8798"/></div>
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:8px">
+          <div class="col"><label>LOGO 位置</label>
+            <select id="logoPos"><option>bottom-right</option><option>bottom-left</option><option>top-right</option><option>top-left</option><option>center</option></select>
+          </div>
+          <div class="col"><label>比例</label><input id="logoScale" type="number" step="0.01" value="0.18"/></div>
+          <div class="col"><label>不透明度</label><input id="logoOpacity" type="number" step="0.05" value="0.9"/></div>
+        </div>
+        <button style="margin-top:8px" id="btnBatch">產生 /render/batch</button>
+        <p class="small">LOGO 檔案固定讀取 <code>static/logo/LOGO.png</code>（後端設定）。</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>4) 多風格對比牆</h2>
+    <div id="wall" class="imgwall"></div>
+  </div>
+
+  <div class="card">
+    <h2>5) 家具編修（替換／改色 → 最終圖）</h2>
+    <div class="row">
+      <div class="col">
+        <label>基底圖（輸入 style 名稱，對應 previews_clean/<style>.png）</label>
+        <input id="baseStyle" placeholder="例如：現代風"/>
+        <label>操作類型</label>
+        <select id="opType"><option value="replace">replace</option><option value="recolor">recolor</option></select>
+        <label>局部遮罩（黑=可改 / 白=鎖）</label><input type="file" id="editMask" accept="image/png"/>
+        <label>replace 描述 / recolor 色彩</label>
+        <input id="editSpec" placeholder="現代風L型布沙發，金屬腳"/>
+        <input id="editColor" type="color" value="#1E3A8A"/>
+        <button id="btnEdit">送出 /render/furniture-edit</button>
+      </div>
+      <div class="col">
+        <h3>最終輸出</h3><img id="finalImg"/>
+      </div>
+    </div>
+  </div>
+
 <script>
-// ===========================
-// 前端互動腳本（Vanilla JS）
-// 功能：載入風格、處理上傳、組合遮罩參數、呼叫後端、輪詢任務狀態、顯示比對、下載圖片
-// ===========================
+const $ = (s)=>document.querySelector(s);
+const api = (p)=>p;
+let g = {jobId:null, imgs:[]};
 
-// Helper: wait for <img> to fully load
-// 等待圖片載入完成，避免尚未取得 naturalWidth/Height 就進行計算
-function waitImg(img){
-  return new Promise(res=>{
-    if(img && img.complete && img.naturalWidth>0) return res();
-    if(!img) return res();
-    img.onload = ()=>res();
-    img.onerror = ()=>res();
-  });
+// ===== 色卡資料 =====
+const PALETTES = [
+  {id:'scandi_soft', name:'北歐柔霧', c:['#E6E8EA','#6BA5A1','#F4D6CC','#6C7278']},
+  {id:'wabi_wood', name:'侘寂自然', c:['#D8CFC4','#8A7F74','#E9E4DA','#6F8A73']},
+  {id:'modern_gold_black', name:'現代金黑', c:['#111827','#D4AF37','#ECECEC','#7C8798']},
+  {id:'industrial_cool', name:'工業冷灰', c:['#2B2F33','#6B7280','#C7CBD1','#8892A0']},
+  {id:'milk_tea', name:'奶茶莫蘭迪', c:['#D7C2AE','#A48C7A','#EFE7DE','#8E9AA6']},
+  {id:'coastal', name:'海岸藍白', c:['#F3F7FB','#2E6F95','#E8F1F8','#9CBBD3']},
+  {id:'forest_sage', name:'森林鼠尾草', c:['#EDEAE3','#6C8B74','#DAC9B4','#7A8D8C']},
+  {id:'pastel_green_pink', name:'莫蘭迪粉綠', c:['#EDE8E4','#9AB5A7','#F2D5D5','#9CA3AF']},
+  {id:'classic_bw_gold', name:'經典黑白金', c:['#0F172A','#FFFFFF','#D4AF37','#9CA3AF']},
+];
+function makePalCard(p){
+  const div = document.createElement('div');
+  div.className='palcard'; div.dataset.id=p.id;
+  div.innerHTML = `
+    <div class="swrow">
+      <div class="sw" style="background:${p.c[0]}"><label>主</label></div>
+      <div class="sw" style="background:${p.c[1]}"><label>配1</label></div>
+      <div class="sw" style="background:${p.c[2]}"><label>配2</label></div>
+      <div class="sw" style="background:${p.c[3]}"><label>配3</label></div>
+    </div>
+    <div class="name"><span>${p.name}</span><span class="small">${p.c.join(' ')}</span></div>`;
+  div.onclick = ()=>applyPalette(p.c, div);
+  return div;
+}
+function applyPalette(c, cardEl){
+  // 仍然同步到隱藏的 inputs（/render/batch 直接讀 inputs，避免邏輯分歧）
+  $('#cMain').value = c[0]; $('#c1').value = c[1]; $('#c2').value = c[2]; $('#c3').value = c[3];
+  document.querySelectorAll('.palcard').forEach(x=>x.classList.remove('selected'));
+  if(cardEl) cardEl.classList.add('selected');
+}
+function buildPaletteGrid(){
+  const grid = $('#paletteGrid'); grid.innerHTML='';
+  PALETTES.forEach(p=> grid.appendChild(makePalCard(p)) );
+}
+function randPalette(){
+  const p = PALETTES[Math.floor(Math.random()*PALETTES.length)];
+  const card = document.querySelector(\`.palcard[data-id="\${p.id}"]\`);
+  applyPalette(p.c, card);
 }
 
-// 後端基底位址：
-// - 正式環境可維持雲端網址
-// - 本機測試可改為空字串 '' 或 'http://localhost:5000'
-const API_BASE = 'https://oldroomchange-image3.onrender.com';
-
-let base64img = "", styleList = [];
-const imgInput = document.getElementById('imageInput');
-const preview = document.getElementById('preview');
-const styleSelect = document.getElementById('styleSelect');
-const styleDesc = document.getElementById('styleDesc');
-const colorInput = document.getElementById('colorInput');
-const genBtn = document.getElementById('genBtn');
-const loading = document.getElementById('loading');
-const compareModeBtns = document.getElementById('compareModeBtns');
-const compareWrap = document.getElementById('compareWrap');
-const originalImg = document.getElementById('originalImg');
-const styledImg = document.getElementById('styledImg');
-const downloadBtn = document.getElementById('downloadBtn');
-const sliderWrap = document.getElementById('sliderWrap');
-const sideBySideBtn = document.getElementById('sideBySideBtn');
-const sliderBtn = document.getElementById('sliderBtn');
-const sliderBefore = document.getElementById('sliderBefore');
-const sliderAfter = document.getElementById('sliderAfter');
-const sliderClipWrap = document.getElementById('sliderClipWrap');
-const sliderControl = document.getElementById('sliderControl');
-const errMsg = document.getElementById('errMsg');
-// 前端：檔案大小上限（2MB），大於上限會提示壓縮
-const MAX_SIZE = 2*1024*1024;
-// Mask controls
-// 取得 mask 單選按鈕 NodeList → 陣列
-const maskModeRadios = () => [...document.querySelectorAll('input[name="maskMode"]')];
-// smart 模式參數：即時讀取表單值（使用 Getter 確保最新）
-const smartOpts = {
-  get margin_ratio(){ return parseFloat(document.getElementById('opt_margin_ratio').value || '0.04'); },
-  get edge_thresh(){ return parseInt(document.getElementById('opt_edge_thresh').value || '28'); },
-  get window_bright_thresh(){ return parseInt(document.getElementById('opt_window_bright_thresh').value || '215'); },
-  get dilate_px(){ return parseInt(document.getElementById('opt_dilate_px').value || '6'); },
-  get protect_windows(){ return document.getElementById('opt_protect_windows').checked; }
-};
-
-
-// 載入風格（向 /styles 取資料，注入下拉選單；並顯示簡短描述）
-fetch(`${API_BASE}/styles`).then(r=>r.json()).then(list=>{
-  styleList=list;
-  styleSelect.innerHTML = list.map((s,i)=>
-    `<option value="${s.name}" ${i==0?'selected':''}>${s.name}</option>`
-  ).join('');
-  function getShortDesc(desc, name) {
-    if(!desc) return name;
-    let d = desc.replace(/。.*$/, '').replace(/[\r\n]/g,'').trim();
-    return d.length>10 ? d.slice(0,10)+'...' : d;
-  }
-  styleDesc.textContent = getShortDesc(list[0]?.desc||"", list[0]?.name||"");
+// ===== 風格清單 =====
+fetch(api('/styles')).then(r=>r.json()).then(list=>{
+  const sel=$('#styleSelect');
+  list.forEach(it=>{ const o=document.createElement('option'); o.value=it.name||it; o.textContent=(it.name||it); sel.appendChild(o); });
 });
-// 切換風格時，更新下方的風格描述
-styleSelect.onchange = ()=>{
-  const v = styleSelect.value;
-  const info = styleList.find(s=>s.name==v);
-  function getShortDesc(desc, name) {
-    if(!desc) return name;
-    let d = desc.replace(/。*$/, '').replace(/[\r\n]/g,'').trim();
-    return d.length>10 ? d.slice(0,10)+'...' : d;
-  }
-  styleDesc.textContent = getShortDesc(info?.desc||"", info?.name||"");
+
+// ===== analyze =====
+const MAX_BYTES = 2 * 1024 * 1024; // 2MB
+$('#btnAnalyze').onclick = async ()=>{
+  const f=$('#fileInput').files[0]; if(!f){alert('請選圖片');return;}
+  if(f.size>MAX_BYTES){ alert('原始照片超過 2MB，請先壓縮後再上傳。'); return; }
+  const fd=new FormData(); fd.append('image',f);
+  const res=await fetch(api('/analyze'),{method:'POST',body:fd}); const j=await res.json(); if(!res.ok){alert(JSON.stringify(j));return;}
+  g.jobId=j.jobId; $('#jobId').value=g.jobId; $('#status').textContent='job: '+g.jobId;
+  const baseUrl = api(`/jobs/${g.jobId}/original.jpg`);
+  const murl=(j.masks||{}).editable_surface||'';
+  await initCanvas(baseUrl, murl);
 };
 
-// 選擇圖片時：
-// - 驗證檔案型別/大小
-// - 顯示預覽
-imgInput.onchange = function(e){
-  preview.innerHTML="";
-  errMsg.classList.add('hidden');
-  compareWrap.classList.add('hidden');
-  sliderWrap.classList.add('hidden');
-  compareModeBtns.style.display = 'none';
-  base64img = "";
-  const file = this.files[0];
-  if(!file) return;
-  if(!['image/jpeg','image/png'].includes(file.type)){
-    alert('❌ 僅接受JPG/PNG格式圖片！');
-    this.value="";
-    return;
-  }
-  if(file.size > MAX_SIZE){
-    alert('❌ 圖片檔案超過2MB！請使用手機截圖、調整畫質或前往 https://tinypng.com 壓縮。');
-    this.value="";
-    return;
-  }
-  if(file.size > MAX_SIZE*0.7){
-    preview.innerHTML='<div class="note">⚠️ 檔案接近上限，建議壓縮可提升速度。</div>';
-  }
-  const reader = new FileReader();
-  reader.onload = function(ev){
-    base64img = ev.target.result;
-    preview.innerHTML += `<img src="${base64img}" style="max-width:220px;max-height:150px;border-radius:12px;margin-top:10px;" alt="預覽"/>`;
-  };
-  reader.readAsDataURL(file);
+// ===== tabs: 色卡 / 自訂 =====
+function setTab(which){
+  const a=$('#tabPreset'), b=$('#tabCustom');
+  const p=$('#palettePreset'), c=$('#paletteCustom');
+  if(which==='preset'){ a.classList.add('active'); b.classList.remove('active'); p.style.display='block'; c.style.display='none'; }
+  else { b.classList.add('active'); a.classList.remove('active'); c.style.display='block'; p.style.display='none'; }
+}
+$('#tabPreset').onclick=()=>setTab('preset');
+$('#tabCustom').onclick=()=>setTab('custom');
+
+// ===== save mask =====
+$('#btnSaveMask').onclick = async ()=>{
+  if(!g.jobId){alert('先 /analyze');return;}
+  const can=$('#maskCanvas'); const blob=await new Promise(r=>can.toBlob(r,'image/png'));
+  const fd=new FormData(); fd.append('jobId',g.jobId); fd.append('mask',blob,'mask.png');
+  const res=await fetch(api('/masks/save'),{method:'POST',body:fd}); const j=await res.json();
+  if(!res.ok){alert(JSON.stringify(j));return;} alert('已儲存最終遮罩 ✅');
 };
 
+// ===== batch render =====
+$('#btnBatch').onclick = async ()=>{
+  if(!g.jobId){alert('先 /analyze');return;}
+  const styles=Array.from($('#styleSelect').selectedOptions).slice(0,3).map(o=>o.value); if(styles.length<1){alert('至少選一種風格');return;}
+  const payload={ jobId:g.jobId, styles, palette:{main:$('#cMain').value, acc1:$('#c1').value, acc2:$('#c2').value, acc3:$('#c3').value},
+    logo:{ pos:$('#logoPos').value, scale:parseFloat($('#logoScale').value||'0.18'), opacity:parseFloat($('#logoOpacity').value||'0.9') } };
+  const res=await fetch(api('/render/batch'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  const j=await res.json(); if(!res.ok){alert(JSON.stringify(j));return;}
+  const wall=$('#wall'); wall.innerHTML=''; g.imgs=j.images||[];
+  g.imgs.forEach(it=>{ const fig=document.createElement('figure'); const img=document.createElement('img'); img.src=api(it.url); const cap=document.createElement('figcaption'); cap.className='small'; cap.textContent=`${it.style}｜keypoint_error=${(j.qc?.[it.style]?.keypoint_error??'')}`; fig.appendChild(img); fig.appendChild(cap); wall.appendChild(fig); });
+};
 
-// 切換 mask 模式時顯示/隱藏 smart 參數（非 smart 模式隱藏進階設定）
-maskModeRadios().forEach(r=>{
-  r.addEventListener('change', ()=>{
-    const mode = maskModeRadios().find(x=>x.checked)?.value || 'smart';
-    document.getElementById('smartOpts').style.display = (mode === 'smart') ? '' : 'none';
-  });
-});
-// 預設 smart 顯示
-document.getElementById('smartOpts').style.display = '';
+// ===== furniture edit =====
+$('#btnEdit').onclick = async ()=>{
+  if(!g.jobId){alert('先 /analyze');return;}
+  const maskFile=$('#editMask').files[0]; if(!maskFile){alert('請選局部遮罩');return;}
+  const fd=new FormData(); fd.append('jobId',g.jobId); fd.append('mask',maskFile,'user_edit.png');
+  const up=await fetch(api('/upload/mask'),{method:'POST',body:fd}); const uj=await up.json(); if(!up.ok){alert(JSON.stringify(uj));return;}
+  const baseStyle=$('#baseStyle').value.trim(); const type=$('#opType').value;
+  const ops=[ type==='replace'? {type:'replace', target:'object', mask:uj.maskUrl, spec:$('#editSpec').value} : {type:'recolor', target:'object', mask:uj.maskUrl, color:$('#editColor').value} ];
+  const res=await fetch(api('/render/furniture-edit'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jobId:g.jobId, baseImageId:baseStyle, operations:ops})});
+  const j=await res.json(); if(!res.ok){alert(JSON.stringify(j));return;}
+  $('#finalImg').src=api(j.imageUrl);
+};
 
-// 送出請求：
-// - 將 base64 圖 + 風格 + 色系 + 遮罩設定打包成 JSON
-// - 呼叫 POST /generate 取得 task_id
-// - 啟動輪詢 /status/<task_id> 等待完成
-genBtn.onclick = async function(){
-  errMsg.classList.add('hidden');
-  if(!base64img){
-    alert('請先選擇圖片！'); return;
-  }
-  if(!colorInput.value.trim()){
-    alert('請輸入主色系（例：白＋淺灰＋木色）'); return;
-  }
-  loading.classList.remove('hidden');
-  compareWrap.classList.add('hidden');
-  sliderWrap.classList.add('hidden');
-  compareModeBtns.style.display = 'none';
-  genBtn.disabled=true;
-  try{
-    const r = await fetch(`${API_BASE}/generate`, {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify((()=>{ const mode = maskModeRadios().find(x=>x.checked)?.value || 'smart'; const payload = { image_base64: base64img, style: styleSelect.value, colors: (colorInput.value||"").replace(/\s+/g," ").trim(), mask: mode }; if(mode==='smart'){ payload.mask_options = { margin_ratio: smartOpts.margin_ratio, edge_thresh: smartOpts.edge_thresh, window_bright_thresh: smartOpts.window_bright_thresh, dilate_px: smartOpts.dilate_px, protect_windows: smartOpts.protect_windows }; } return payload; })())
-    });
-    const resp = await r.json();
-    if(resp.status==="failed"){
-      throw new Error(resp.error||'伺服器錯誤，請稍後再試。');
+// ===== 初始：建立色卡 =====
+buildPaletteGrid(); randPalette(); setTab('preset');
+
+// ===== Painter v2: zoom/pan + edge assist + colored cursor =====
+let painter = null;
+async function initCanvas(baseUrl, maskUrl){
+  const baseImg = new Image(); baseImg.crossOrigin="anonymous"; baseImg.src=baseUrl;
+  const initMask = new Image(); initMask.crossOrigin="anonymous"; initMask.src=api(maskUrl);
+  await new Promise(r=>baseImg.onload=r); await new Promise(r=>initMask.onload=r);
+
+  const can = $('#maskCanvas'), ui = $('#uiCanvas');
+  const ctx = can.getContext('2d'); const uictx = ui.getContext('2d');
+  can.width = ui.width = baseImg.width; can.height = ui.height = baseImg.height;
+
+  // Offscreen mask buffer: 白=鎖(不透明)；透明=可改
+  const maskBuf = document.createElement('canvas'); maskBuf.width=baseImg.width; maskBuf.height=baseImg.height;
+  const mctx = maskBuf.getContext('2d'); mctx.clearRect(0,0,maskBuf.width,maskBuf.height);
+  mctx.drawImage(initMask,0,0,maskBuf.width,maskBuf.height);
+
+  // Edge buffer
+  const edgeBuf = document.createElement('canvas'); edgeBuf.width=baseImg.width; edgeBuf.height=baseImg.height;
+  const ectx = edgeBuf.getContext('2d'); ectx.drawImage(baseImg,0,0);
+  const eImg = ectx.getImageData(0,0,edgeBuf.width,edgeBuf.height);
+  // Sobel edge
+  const w=edgeBuf.width,h=edgeBuf.height; const gray=new Uint8ClampedArray(w*h);
+  for(let i=0, p=0;i<eImg.data.length;i+=4, p++){ gray[p]=(eImg.data[i]*0.299 + eImg.data[i+1]*0.587 + eImg.data[i+2]*0.114)|0; }
+  const Gx=[-1,0,1,-2,0,2,-1,0,1], Gy=[-1,-2,-1,0,0,0,1,2,1];
+  const edge=new Uint8ClampedArray(w*h);
+  for(let y=1;y<h-1;y++){
+    for(let x=1;x<w-1;x++){
+      let sx=0, sy=0, k=0;
+      for(let j=-1;j<=1;j++) for(let i=-1;i<=1;i++,k++){
+        const v = gray[(y+j)*w+(x+i)];
+        sx += v*Gx[k]; sy += v*Gy[k];
+      }
+      const mag = Math.min(255, Math.hypot(sx,sy)|0);
+      edge[y*w+x] = mag;
     }
-    let t = 0, maxTry=60;
-    let poll;
-    poll = setInterval(async ()=>{
-      // 每 2 秒輪詢一次任務狀態
-      const rs = await fetch(`${API_BASE}/status/${resp.task_id}`);
-      const j = await rs.json();
-      if(j.status==="completed"){
-        // 成功：關閉 loading、顯示比對、綁定下載按鈕、顯示遮罩預覽
-        clearInterval(poll);
-        loading.classList.add('hidden');
-        showComparison(j.original_image_url, j.styled_image_url);
-        downloadBtn.onclick = ()=>downloadImg(j.styled_image_url);
+  }
+  const edgeImg = ectx.createImageData(w,h);
+  let edgeThr = 60; // threshold
+  function updateEdgeOverlay(){
+    for(let p=0, i=0;p<w*h;p++, i+=4){
+      const v=edge[p]; edgeImg.data[i]=64; edgeImg.data[i+1]=200; edgeImg.data[i+2]=255; edgeImg.data[i+3]=(v>=edgeThr? 180: 0);
+    }
+    ectx.putImageData(edgeImg,0,0);
+  }
+  updateEdgeOverlay();
+  let showEdges=false;
 
-        if (j.mask_url) {
-          const wrap = document.getElementById('maskPreviewWrap');
-          const mp = document.getElementById('maskPreview');
-          mp.src = API_BASE + j.mask_url;
-          wrap.classList.remove('hidden');
+  // View transform
+  let scale=1, ox=0, oy=0; const MIN_S=0.2, MAX_S=6;
+  let isPanning=false, spaceDown=false, lastX=0, lastY=0;
+  const overlayOpacity = $('#overlayOpacity'); const opVal=$('#opVal');
+  function render(){
+    ctx.setTransform(scale,0,0,scale,ox,oy);
+    ctx.clearRect(-ox/scale,-oy/scale, can.width/scale, can.height/scale);
+    ctx.drawImage(baseImg,0,0);
+    // draw mask with adjustable opacity
+    const alpha = Math.max(0, Math.min(1, (parseInt(overlayOpacity.value,10)||35)/100));
+    ctx.globalAlpha = alpha; ctx.drawImage(maskBuf,0,0); ctx.globalAlpha = 1;
+    if(showEdges){ ctx.drawImage(edgeBuf,0,0); }
+    // draw cursor
+    uictx.setTransform(scale,0,0,scale,ox,oy);
+    uictx.clearRect(-ox/scale,-oy/scale, ui.width/scale, ui.height/scale);
+    if(cursor.visible){
+      uictx.beginPath(); uictx.arc(cursor.x, cursor.y, cursor.r, 0, Math.PI*2);
+      uictx.lineWidth = 2/scale; uictx.strokeStyle = (cursor.tool==='unlock')?'#22c55e':'#ef4444';
+      uictx.stroke();
+    }
+    opVal.textContent = Math.round(alpha*100);
+  }
+  function screenToImage(sx, sy){ return {x:(sx-ox)/scale, y:(sy-oy)/scale}; }
+
+  // Painting state
+  const brush = $('#brush'); const brushVal=$('#brushVal');
+  const undoStack=[], redoStack=[]; const MAX_STACK=20;
+  let tool='unlock', drawing=false;
+  const cursor = {x:0,y:0,r:parseInt(brush.value,10)||20, tool:'unlock', visible:false};
+
+  function snapshot(){
+    const m = mctx.getImageData(0,0,maskBuf.width,maskBuf.height);
+    undoStack.push(m); if(undoStack.length>MAX_STACK) undoStack.shift(); redoStack.length=0;
+  }
+  function restoreFrom(stackFrom, stackTo){
+    if(stackFrom.length===0) return;
+    const cur = mctx.getImageData(0,0,maskBuf.width,maskBuf.height);
+    stackTo.push(cur);
+    const imgData = stackFrom.pop();
+    mctx.putImageData(imgData,0,0);
+    render();
+  }
+  function paintAt(ix,iy){
+    const r = cursor.r;
+    mctx.save();
+    if(tool==='unlock'){ // erase to transparent
+      mctx.globalCompositeOperation='destination-out';
+      mctx.beginPath(); mctx.arc(ix,iy,r,0,Math.PI*2); mctx.fillStyle='rgba(0,0,0,1)'; mctx.fill();
+    }else{ // lock: paint white
+      mctx.globalCompositeOperation='source-over';
+      mctx.beginPath(); mctx.arc(ix,iy,r,0,Math.PI*2); mctx.fillStyle='rgba(255,255,255,1)'; mctx.fill();
+    }
+    mctx.restore();
+  }
+
+  // Events
+  document.querySelectorAll('[data-tool]').forEach(b=>{ b.onclick=()=>{ tool=b.getAttribute('data-tool'); cursor.tool=tool; render(); }; });
+  document.getElementById('btnUndo').onclick=()=>restoreFrom(undoStack, redoStack);
+  document.getElementById('btnRedo').onclick=()=>restoreFrom(redoStack, undoStack);
+  brush.oninput=()=>{ cursor.r=parseInt(brush.value,10)||20; brushVal.textContent=brush.value; render(); };
+
+  can.addEventListener('wheel', (e)=>{
+    e.preventDefault();
+    const rect=can.getBoundingClientRect();
+    const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+    const before=screenToImage(mx,my);
+    const s = Math.exp(-e.deltaY*0.001);
+    const ns = Math.max(MIN_S, Math.min(MAX_S, scale*s));
+    scale = ns;
+    const after=screenToImage(mx,my);
+    ox += (mx - (after.x*scale)) - (mx - (before.x*scale));
+    oy += (my - (after.y*scale)) - (my - (before.y*scale));
+    render();
+  }, {passive:false});
+  can.addEventListener('mousedown',(e)=>{
+    const rect=can.getBoundingClientRect();
+    lastX=e.clientX-rect.left; lastY=e.clientY-rect.top;
+    if(spaceDown){ isPanning=true; return; }
+    drawing=true; snapshot();
+    const {x,y}=screenToImage(lastX,lastY); paintAt(x,y); render();
+  });
+  window.addEventListener('mousemove',(e)=>{
+    const rect=can.getBoundingClientRect();
+    const sx=e.clientX-rect.left, sy=e.clientY-rect.top;
+    cursor.visible = (sx>=0 && sy>=0 && sx<=rect.width && sy<=rect.height);
+    const pt=screenToImage(sx,sy); cursor.x=pt.x; cursor.y=pt.y;
+    if(isPanning){
+      ox += (sx-lastX); oy += (sy-lastY);
+      lastX=sx; lastY=sy; render(); return;
+    }
+    if(drawing){ const {x,y}=pt; paintAt(x,y); render(); }
+    else { render(); }
+  });
+  window.addEventListener('mouseup',()=>{ drawing=false; isPanning=false; });
+  document.addEventListener('keydown',(e)=>{
+    if(e.target.tagName==='INPUT' || e.target.tagName==='TEXTAREA') return;
+    if(e.code==='Space') spaceDown=true;
+    if(e.key==='e' || e.key==='E'){ tool='unlock'; cursor.tool=tool; render(); }
+    if(e.key==='r' || e.key==='R'){ tool='lock'; cursor.tool=tool; render(); }
+    if(e.key==='z' || e.key==='Z'){ e.preventDefault(); document.getElementById('btnUndo').click(); }
+    if(e.key==='y' || e.key==='Y'){ e.preventDefault(); document.getElementById('btnRedo').click(); }
+  });
+  document.addEventListener('keyup',(e)=>{ if(e.code==='Space') spaceDown=false; });
+
+  // Controls
+  $('#btnZoomIn').onclick=()=>{ scale=Math.min(MAX_S, scale*1.2); render(); };
+  $('#btnZoomOut').onclick=()=>{ scale=Math.max(MIN_S, scale/1.2); render(); };
+  $('#btnZoomReset').onclick=()=>{ scale=1; ox=0; oy=0; render(); };
+  $('#overlayOpacity').oninput=()=>render();
+  $('#btnToggleEdges').onclick=()=>{ showEdges=!showEdges; render(); };
+  $('#edgeThr').oninput=()=>{ edgeThr=parseInt($('#edgeThr').value||'60',10); $('#thrVal').textContent=edgeThr; updateEdgeOverlay(); render(); };
+  $('#edgeRad').oninput=()=>{ $('#radVal').textContent=parseInt($('#edgeRad').value||'3',10); };
+
+  function protectEdges(){
+    const rad = parseInt($('#edgeRad').value||'3',10);
+    for(let y=0;y<h;y++){
+      for(let x=0;x<w;x++){
+        if(edge[y*w+x] >= edgeThr){
+          mctx.save();
+          mctx.globalCompositeOperation='source-over';
+          mctx.beginPath(); mctx.arc(x,y,rad,0,Math.PI*2); mctx.fillStyle='rgba(255,255,255,1)'; mctx.fill();
+          mctx.restore();
         }
-
-        genBtn.disabled=false;
       }
-      if(j.status==="failed"){
-        // 失敗：顯示錯誤訊息
-        clearInterval(poll);
-        loading.classList.add('hidden');
-        errMsg.textContent = "❌ 產生失敗："+(j.error||"未知錯誤"); errMsg.classList.remove('hidden');
-        genBtn.disabled=false;
-      }
-      if(++t > maxTry){
-        // 逾時：停止輪詢並提示
-        clearInterval(poll);
-        loading.classList.add('hidden');
-        errMsg.textContent = "❌ 超時，請重新上傳圖片再試。";
-        errMsg.classList.remove('hidden');
-        genBtn.disabled=false;
-      }
-    },2000);
-  }catch(e){
-    loading.classList.add('hidden');
-    errMsg.textContent = "❌ "+e.message;
-    errMsg.classList.remove('hidden');
-    genBtn.disabled=false;
+    }
   }
-};
-
-// 顯示比對圖（優化圖片大小/對齊/滑桿起點）：
-// - 動態設定外框 aspect-ratio 以符合實圖比例
-// - 預設先顯示「滑桿比對」模式並露出模式切換按鈕
-function showComparison(originalUrl, styledUrl) {
-  // Set sources
-  if (typeof API_BASE === 'undefined') { window.API_BASE = ''; }
-  originalImg.src = API_BASE + originalUrl;
-  styledImg.src   = API_BASE + styledUrl;
-  sliderBefore.src = API_BASE + originalUrl;
-  sliderAfter.src  = API_BASE + styledUrl;
-
-  Promise.all([waitImg(sliderAfter), waitImg(sliderBefore)]).then(()=> {
-    const w = sliderAfter.naturalWidth || 1024;
-    const h = sliderAfter.naturalHeight || 1024;
-    const outer = document.querySelector('#sliderWrap .slider-outer');
-    if (outer && outer.style) {
-      outer.style.aspectRatio = w + ' / ' + h;  // dynamically match image ratio
+  function cleanSpecks(){
+    const m = mctx.getImageData(0,0,w,h);
+    const d = m.data;
+    // simple 3x3 box blur on alpha, then threshold
+    const alpha = new Uint8ClampedArray(w*h);
+    for(let p=0, i=3;p<w*h;p++, i+=4) alpha[p]=d[i];
+    const out = new Uint8ClampedArray(w*h);
+    for(let y=1;y<h-1;y++){
+      for(let x=1;x<w-1;x++){
+        let s=0;
+        for(let j=-1;j<=1;j++) for(let i=-1;i<=1;i++) s+= alpha[(y+j)*w+(x+i)];
+        const avg = s/9;
+        out[y*w+x] = (avg>180)? 255 : 0; // keep large areas
+      }
     }
-    // Reset slider position
-    sliderClipWrap.style.width = "0%";
-    sliderControl.value = 0;
-
-    // Default show side-by-side compare
-    compareWrap.classList.add('hidden');
-    sliderWrap.classList.remove('hidden');
-    if (typeof compareModeBtns !== 'undefined' && compareModeBtns) {
-      compareModeBtns.style.display = '';
+    // write back: 255 -> opaque white, 0 -> transparent
+    for(let p=0, i=0;p<w*h;p++, i+=4){
+      d[i]=255; d[i+1]=255; d[i+2]=255; d[i+3]=out[p];
     }
-  });
+    mctx.putImageData(m,0,0);
+  }
+  $('#btnProtectEdges').onclick=()=>{ protectEdges(); render(); };
+  $('#btnCleanSpecks').onclick=()=>{ cleanSpecks(); render(); };
+  $('#btnSmartFix').onclick=()=>{ protectEdges(); cleanSpecks(); render(); };
+
+  painter = { render, maskBuf, baseImg };
+  render();
 }
 
-// 切換為左右並排比對
-sideBySideBtn.onclick = function(){
-  sliderWrap.classList.add('hidden');
-  compareWrap.classList.remove('hidden');
-}
-// 切換為滑桿比對
-sliderBtn.onclick = function(){
-  compareWrap.classList.add('hidden');
-  sliderWrap.classList.remove('hidden');
-}
-
-// 滑桿事件（同步 clip width）：
-// 依 slider 數值（0–100）調整上層圖覆蓋寬度
-sliderControl.oninput = function(){
-  sliderClipWrap.style.width = `${this.value}%`;
-}
-
-// 下載圖片（自 /results 補上 API_BASE 以支援本機/雲端）
-function downloadImg(url){
-  fetch(API_BASE + url).then(r=>r.blob()).then(blob=>{
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = "styled_output.png";
-    document.body.appendChild(link);
-    link.click(); document.body.removeChild(link);
-  });
-}
+// ===== 色卡初始化 =====
+function buildPaletteGrid(){ const grid = $('#paletteGrid'); grid.innerHTML=''; PALETTES.forEach(p=> grid.appendChild(makePalCard(p)) ); }
+function makePalCard(p){ const div = document.createElement('div'); div.className='palcard'; div.dataset.id=p.id; div.innerHTML = `<div class="swrow"><div class="sw" style="background:${p.c[0]}"><label>主</label></div><div class="sw" style="background:${p.c[1]}"><label>配1</label></div><div class="sw" style="background:${p.c[2]}"><label>配2</label></div><div class="sw" style="background:${p.c[3]}"><label>配3</label></div></div><div class="name"><span>${p.name}</span><span class="small">${p.c.join(' ')}</span></div>`; div.onclick = ()=>applyPalette(p.c, div); return div; }
+function applyPalette(c, cardEl){ $('#cMain').value = c[0]; $('#c1').value = c[1]; $('#c2').value = c[2]; $('#c3').value = c[3]; document.querySelectorAll('.palcard').forEach(x=>x.classList.remove('selected')); if(cardEl) cardEl.classList.add('selected'); }
+function randPalette(){ const p = PALETTES[Math.floor(Math.random()*PALETTES.length)]; const card = document.querySelector(`.palcard[data-id="${p.id}"]`); applyPalette(p.c, card); }
+buildPaletteGrid(); randPalette();
 </script>
 </body>
 </html>
-
-
