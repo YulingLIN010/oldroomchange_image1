@@ -1,151 +1,147 @@
+
 # -*- coding: utf-8 -*-
 """
-prompt_templates.py
-- 將常見「風格名稱」與「顏色中文」對應到英文描述，便於餵給模型；
-- 從 styles.txt 讀取風格清單（支援 * 區塊格式），找不到則 fallback；
-- 產生嚴格的室內風格轉換 prompt，並與「透明遮罩 = 可編輯、實心遮罩 = 保留」規則對齊。
+prompt_templates.py — 混合版風格提示詞生成
+- 同時參考 styles_brief_table.json（精簡重點）與 styles.txt（長描述）
+- 支援中文風格/顏色 → 英文化片語（基礎），或直接用 HEX
+- 參數：
+    build_style_prompt(style_name, colors_dict, enforce_hard_rules=True, extra="")
+  colors_dict: {"main":"#112233或中文/英文", "acc1":..., "acc2":..., "acc3":...}
+- enforce_hard_rules=True：加入「嚴禁改變相機視角/結構/開口位置」等硬規則（照片上傳版要開）
 """
+import json, re
+from pathlib import Path
 
-import os
-from typing import List, Dict
+BASE_DIR = Path("/mnt/data").resolve()
+STYLES_TABLE = BASE_DIR / "styles_brief_table.json"
+STYLES_TXT   = BASE_DIR / "styles.txt"
 
-# 常見室內風格（中文 => 英文）
-STYLE_EN_MAP = {
-    "北歐風": "Scandinavian style",
-    "工業風": "Industrial style",
-    "現代風": "Modern style",
-    "簡約風": "Minimalist style",
-    "混搭風": "Eclectic style",
-    "鄉村風": "Country style",
-    "日式侘寂風": "Wabi-sabi Japanese style",
-    "日式禪風": "Zen Japanese style",
-    "日式無印風": "MUJI Japanese style",
-    "古典風": "Classical style",
-    "新古典風格": "Neo-classical style",
-    "地中海風": "Mediterranean style",
-    "美式風": "American style",
+# --- 基礎詞庫（可擴充） ---
+ZH_COLOR_MAP = {
+    "白": "white", "米白": "off-white", "黑": "black", "灰": "gray",
+    "淺灰": "light gray", "深灰": "charcoal gray",
+    "藍": "blue", "海軍藍": "navy blue", "粉藍": "pastel blue", "靛藍": "indigo",
+    "綠": "green", "橄欖綠": "olive green", "鼠尾草綠": "sage green",
+    "紅": "red", "酒紅": "burgundy", "磚紅": "brick red",
+    "黃": "yellow", "金色": "gold", "琥珀": "amber",
+    "棕": "brown", "胡桃木": "walnut", "橡木": "oak", "柚木": "teak",
+    "米色": "beige", "奶油色": "cream", "駝色": "camel",
+    "粉": "pink", "粉紅": "pink", "珊瑚": "coral",
+    "紫": "purple", "薰衣草": "lavender",
+    "橘": "orange", "陶土": "terracotta",
 }
 
-# 常見顏色中文 => 英文
-COLOR_EN_MAP = {
-    "白": "white", "奶油白": "cream white", "灰": "gray", "藍": "blue",
-    "金": "gold", "米灰": "beige", "木色": "wood", "淺藍": "light blue",
-    "黑": "black", "粉紅": "pink", "米色": "ivory", "綠": "green", "黃色": "yellow",
-    "深藍": "navy blue", "淺灰": "light gray", "棕": "brown", "紅": "red",
-    "橘": "orange", "銀": "silver", "紫": "purple"
-}
+def _load_styles_table() -> dict:
+    if STYLES_TABLE.exists():
+        try:
+            return json.loads(STYLES_TABLE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
 
-def cn_color_to_en(color_str: str) -> str:
+def _load_styles_txt() -> dict:
     """
-    將中文色票字串轉成英文，並把「＋ / + / 、 / ，」等分隔符標準化為逗號，利於模型解析多色系。
-    例如：「藍＋金」=> "blue, gold"
+    styles.txt 建議格式：每個風格用 ==== 分隔，標頭一行風格名，以下為長描述。
+    允許自由格式；本函式以最寬鬆方式切段。
     """
-    result = color_str or ""
-    # 先比對長詞，避免子字串誤替換（如「淺藍」與「藍」）
-    color_items = sorted(COLOR_EN_MAP.items(), key=lambda x: -len(x[0]))
-    for cn, en in color_items:
-        result = result.replace(cn, en)
-    # 標準化分隔
-    for sep in ("＋", "+", "、", "，", " "):
-        result = result.replace(sep, ", ")
-    # 收斂多餘逗號與空白
-    result = ", ".join([p.strip() for p in result.split(",") if p.strip()])
+    result = {}
+    if STYLES_TXT.exists():
+        txt = STYLES_TXT.read_text(encoding="utf-8", errors="ignore")
+        blocks = re.split(r"\n={2,}\n", txt)  # 以多個等號分段（若無也能兼容）
+        for block in blocks:
+            lines = [l.strip() for l in block.strip().splitlines() if l.strip()]
+            if not lines: continue
+            name = lines[0]
+            body = "\n".join(lines[1:]).strip()
+            if name:
+                result[name] = body
     return result
 
-def load_styles() -> List[Dict[str, str]]:
+def _norm_style_name(name: str) -> str:
+    return (name or "").strip()
+
+def _color_piece(c: str) -> str:
+    if not c: return ""
+    c = c.strip()
+    if c.startswith("#") and (len(c) in (4,7)):  # #RGB 或 #RRGGBB
+        return c
+    # 映射中文到英文
+    return ZH_COLOR_MAP.get(c, c)
+
+def _colors_to_text(colors: dict) -> str:
+    # 將 main+acc1+acc2+acc3 組為短語：Primary ...; Accents ...
+    if not colors: return ""
+    main = _color_piece(colors.get("main",""))
+    accs = [ _color_piece(colors.get(k,"")) for k in ("acc1","acc2","acc3") ]
+    accs = [a for a in accs if a]
+    parts = []
+    if main:
+        parts.append(f"Primary color: {main}")
+    if accs:
+        parts.append("Accent colors: " + ", ".join(accs))
+    return "; ".join(parts)
+
+def build_style_prompt(style_name: str, colors: dict=None, enforce_hard_rules: bool=True, extra: str="") -> str:
     """
-    讀取 styles.txt，輸出 [{name, desc}] 清單。
-    - 若找不到檔案，就用 STYLE_EN_MAP 的 key 當作預設風格清單。
-    - styles.txt 的格式：以星號 * 開頭為一個條目，內含名稱與描述段落。
+    回傳最終提示詞（中英混合更穩定）。
+    - 來自 styles_brief_table.json 的關鍵詞會作為「風格核心」
+    - 來自 styles.txt 的長敘述會作為「細節補充」
+    - colors 轉成英文化段落；若給的是 HEX 也會保留
+    - enforce_hard_rules=True 時插入「嚴禁變動結構/視角/開口位置/比例」等規則（照片上傳版用）
+    - extra 可補充任務特定說明（如空間/構圖）
     """
-    path = "styles.txt"
-    if not os.path.exists(path):
-        return [{"name": k, "desc": k} for k in STYLE_EN_MAP.keys()]
-    styles: List[str] = []
-    with open(path, encoding="utf-8") as f:
-        block: List[str] = []
-        for line in f:
-            if line.strip().startswith("#"):
-                continue
-            if line.startswith("*"):
-                if block:
-                    styles.append("".join(block))
-                    block = []
-            block.append(line)
-        if block:
-            styles.append("".join(block))
-    result: List[Dict[str, str]] = []
-    for s in styles:
-        name = s.split("\n")[0].replace("*", "").strip()
-        # 嘗試從段落中撈一行當作簡短描述
-        desc = ""
-        for l in s.split("\n"):
-            if "核心" in l or "設計理念" in l or "特色" in l:
-                desc = (
-                    l.replace("設計理念", "")
-                    .replace("特色", "")
-                    .replace("核心：", "")
-                    .replace("：", "")
-                    .strip()
-                )
-                break
-        result.append({"name": name, "desc": (desc[:10] if desc else name)})
-    return result
+    style_name = _norm_style_name(style_name)
+    colors_text = _colors_to_text(colors or {})
 
-def make_prompt(style: str, colors: str) -> str:
-    """
-    組合最終給模型的指令文字：
-    - 強調「保留原圖視角、布局、深度與結構」
-    - 僅以表面材質/家具/燈具等做風格轉換
-    - 使用者選的風格與色系會轉換成英文以便模型理解
-    - 與「透明遮罩 = 可編輯；實心遮罩 = 保留」規則對齊
-    """
-    style = style or ""
-    colors = colors or ""
-    style_en = STYLE_EN_MAP.get(style, style)
-    colors_en = cn_color_to_en(colors)
+    # 讀資料源
+    table = _load_styles_table()
+    longform = _load_styles_txt()
 
-    style_list = load_styles()
-    style_info = next((s for s in style_list if s["name"] == style), {"desc": ""})
-    style_desc = style_info["desc"] or style
+    brief = table.get(style_name) or table.get(style_name.replace("風","")) or ""
+    long_desc = longform.get(style_name, "")
 
-    prompt = f"""
-You are an interior design image editor. Modify the provided image in-place to match the target style. Do NOT generate a new scene. Preserve exact geometry, perspective and camera framing from the input photo.
+    # 核心風格段（英文化關鍵詞＋中文補充更穩）
+    style_core = []
+    if isinstance(brief, dict):
+        # 若表格給的是 dict，可彙整主要欄位
+        key_bits = []
+        for k,v in brief.items():
+            if isinstance(v, (list, tuple)):
+                key_bits.extend([str(x) for x in v])
+            elif isinstance(v, str):
+                key_bits.append(v)
+        if key_bits:
+            style_core.append("Style essence: " + ", ".join(key_bits))
+    elif isinstance(brief, str) and brief.strip():
+        style_core.append("Style essence: " + brief.strip())
 
-Strictly follow all of the following rules for style conversion.
+    if long_desc:
+        style_core.append("Style notes (zh): " + re.sub(r"\s+", " ", long_desc)[:800])
 
-1. DO NOT change or reinterpret:
-   - camera angle, lens perspective, or field of view
-   - room size, proportions, or depth
-   - wall positions, ceiling height, or layout
-   - window and door positions, sizes, or shapes
-   - hallways, visible background rooms, or any fixed architectural features
+    if colors_text:
+        style_core.append(colors_text)
 
-2. DO NOT crop, shift, rotate, or reframe the original image.
-3. DO NOT remove, redraw, or reinterpret the spatial boundaries or depth.
-4. ONLY overlay and replace the following surface-level elements to match the "{style_en}" interior design style with the color palette: {colors_en}.
-    - furniture (consistent with {style_en} aesthetics; use built-in units where appropriate)
-    - wall finishes (texture, paint, decorative panels)
-    - ceiling treatments (trim, lighting layout)
-    - flooring materials (wood, tile, or concrete matching the style)
-    - lighting fixtures (ceiling, wall-mounted, or floor types that suit the style)
-    - door panel surface finish (but NEVER change door location or dimensions)
+    # 硬規則（照片上傳版必須開）
+    hard_rules = []
+    if enforce_hard_rules:
+        hard_rules = [
+            "嚴禁變動：相機角度、透視、房間尺寸、牆面/天花/開口（門窗）位置與尺寸、走廊與背景空間。",
+            "不可裁切、旋轉、位移或改變構圖框架；維持原始透視與深度關係。",
+            "僅允許在表面層作業：牆面飾材、天花、地坪、燈具與可移動家具；固定建築構件（樑柱、門窗框）不得改動。",
+            "所有新增家具需為 built-in 或合理尺寸，遵守風格一致性與真實光影。",
+        ]
 
-5. Remove all existing elements that do not conform to "{style_en}".
-6. Apply a coherent visual identity based on "{style_en}" style.
-7. Strictly use "{colors_en}" as the dominant visual theme in all replaceable areas.
-8. Ensure a clean, unified appearance with no mixed-style clutter.
-9. Built-in cabinetry is mandatory for all major furniture pieces.
-10. Maintain spatial realism, lighting accuracy, and natural shadows.
+    if extra:
+        style_core.append(extra)
 
-MASK SCOPE (IMPORTANT)
-- Only modify areas where the mask is transparent (alpha = 0).
-- Do NOT alter any opaque (alpha = 255) regions of the mask.
+    # 合成最終提示詞
+    segments = [
+        f"室內設計風格：{style_name} / Interior style: {style_name}",
+        *style_core,
+        "輸出要求：高真實度材質、正確光影、自然陰影、清爽收納、避免雜亂和重複圖樣。",
+    ]
+    if hard_rules:
+        segments.append("硬規則 / Hard Constraints: " + " ".join(hard_rules))
 
-DO NOT VIOLATE STRUCTURAL RULES. The spatial layout and perspective must MATCH EXACTLY the original photograph.
-
-Style description: {style_desc}
-
-Output a single interior design image with the above constraints.
-""".strip()
-    return prompt
+    final_prompt = "\n".join(segments)
+    return final_prompt
