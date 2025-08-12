@@ -344,7 +344,8 @@ def render_batch():
             except Exception:
                 # 沒 LOGO 或失敗：直接使用原圖
                 out_png = tmp_path
-            results.append({"style": style, "url": _abs_url(f"/jobs/{job.id}/outputs/{os.path.basename(out_png)}")})qc[style] = {"keypoint_error": ""}  # 可擴充：關鍵點比對
+            results.append({"style": style, "url": _abs_url(f"/jobs/{job.id}/outputs/{os.path.basename(out_png)}")})
+            qc[style] = {"keypoint_error": ""}  # 可擴充：關鍵點比對
         except Exception as e:
             results.append({"style": style, "url": "", "error": str(e)})
             qc[style] = {"keypoint_error": ""}
@@ -383,6 +384,19 @@ def furniture_edit():
     }
     """
     data = request.get_json(force=True, silent=False)
+
+    # --- Compatibility: accept { operations:[{type, mask, spec, color}] } payload from frontend ---
+    if not data.get("mask") and isinstance(data.get("operations"), list) and data["operations"]:
+        op0 = data["operations"][0] or {}
+        # Map fields to legacy keys
+        if not data.get("type") and op0.get("type"):
+            data["type"] = op0.get("type")
+        if not data.get("mask") and op0.get("mask"):
+            data["mask"] = op0.get("mask")
+        if not data.get("spec") and op0.get("spec"):
+            data["spec"] = op0.get("spec")
+        if not data.get("color") and op0.get("color"):
+            data["color"] = op0.get("color")
     job_id = (data.get("jobId") or "").strip()
     if not job_id:
         return jsonify({"error": "jobId required"}), 400
@@ -454,7 +468,9 @@ def furniture_edit():
     with open(out_path, "wb") as f:
         f.write(img_bytes)
 
-    return jsonify({"imageUrl": _abs_url(f"/jobs/{job.id}/outputs/{os.path.basename(out_path)}")})@app.get("/styles")
+    return jsonify({"imageUrl": _abs_url(f"/jobs/{job.id}/outputs/{os.path.basename(out_path)}")})
+
+@app.get("/styles")
 def styles_endpoint():
     return jsonify(load_styles())
 
