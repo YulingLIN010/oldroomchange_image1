@@ -1,31 +1,25 @@
 
 # -*- coding: utf-8 -*-
 """
-Flask 應用主程式（整合對齊版 v3）
-前後端 I/O 對齊 frontend.html：
-- POST /analyze           ：接收原圖（FormData: image）→ 建 jobId、產初始遮罩（前端用 UI 遮罩：白=鎖、透明=可改）
-- POST /masks/save        ：接收前端修正後的 UI 遮罩（PNG，白=鎖、透明=可改）→ 轉 L 遮罩（白=可改、黑=保護）存檔
-- POST /render/batch      ：一次最多 3 種風格（JSON: jobId, styles[], palette{main,acc1,acc2,acc3}, logo{pos,scale,opacity}）→ 逐一生成
-- POST /upload/mask       ：上傳局部遮罩（家具編修用）→ 回傳可用 URL
-- POST /render/furniture-edit：針對單一遮罩做 replace / recolor（實作為同一張圖的局部 edit）
-- GET  /styles            ：回傳可用風格清單
-- GET  /jobs/<jobId>/<path:filename> ：提供 jobs 目錄靜態檔案（原圖/遮罩/輸出等）
+Flask 應用主程式（v1.7L 合併調整版）
+對齊前端「單一最終遮罩」流程：
+- /analyze：接受 multipart 或 JSON；回傳 initial 結構遮罩（combined_mask_b64）與（若可用）depth_b64。
+- /masks/save：接受 multipart 或 JSON；最終只存一張 L 遮罩（白=可編輯、黑=保護）。
+- /render/batch：沿用你既有生圖流程，套用最終遮罩；支援 logo 疊圖。
+- 其它舊端點與靜態檔路由保留，兼容既有客戶端。
 
-保留舊接口（給其他客戶端）
-- POST /generate          ：（舊）單次生成，參數 image_base64, style, colors, mask, mask_options
-- GET  /status/<task_id>  ：（舊）查任務狀態
-
-遮罩規則統一：
-- 前端 UI 遮罩： 白=鎖定（不可改）、透明=可改
-- OpenAI 遮罩（透明 PNG）： alpha=255（不透明）=保護、alpha=0（透明）=可編輯
-- 內部 L 遮罩（單通道）：   L=0（黑）=保護、L=255（白）=可編輯
+遮罩語意統一：
+- 內部 L 遮罩（單通道 L8）：白(255)=可編輯、黑(0)=保護
+- OpenAI 透明遮罩：透明(alpha=0)=可編輯、不透明(alpha=255)=保護
+- 前端 UI 遮罩（若用）：白=鎖定、透明=可改（僅做顯示與手繪，最終仍轉成 L 遮罩）
 """
-import os, io, uuid, time, threading, base64, json
+import os, io, uuid, time, threading, base64, json, traceback
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List
 
 from flask import Flask, jsonify, request, send_from_directory, abort
 from flask_cors import CORS
+from werkzeug.exceptions import HTTPException
 from PIL import Image, ImageOps
 import numpy as np
 import cv2
@@ -33,12 +27,32 @@ import cv2
 # ==== 相依匯入（優先 utils.*；若沒有 utils，再嘗試同層） ====
 try:
     from utils.dalle_api import edit_image_with_mask, generate_image
-    from utils.image_logo import add_logo
-    from utils.prompt_templates import load_styles, build_style_prompt, make_prompt
 except ModuleNotFoundError:
     from dalle_api import edit_image_with_mask, generate_image
+
+try:
+    from utils.image_logo import add_logo
+except ModuleNotFoundError:
     from image_logo import add_logo
-    from prompt_templates import load_styles, build_style_prompt, make_prompt
+
+try:
+    from utils.prompt_templates import load_styles, build_style_prompt, make_prompt
+except ModuleNotFoundError:
+    def load_styles(): return [{"name":"現代風 Modern"}]
+    def build_style_prompt(style, colors=None, enforce_hard_rules=True):
+        pal = colors or {}
+        return (
+            f"室內設計風格：{style}。保持原相機視角與透視，不改變樑柱、門窗與結構。"
+            f"僅在遮罩圈選區更新表面材質與家具，色系：{pal}。高品質、寫實、無文字。"
+        )
+    def make_prompt(*args, **kwargs): return build_style_prompt(*args, **kwargs)
+
+# 深度（MiDaS v2.1 Small, ONNX Runtime；可選）
+try:
+    from utils.depth_onnx import infer_depth_map, depth_to_b64
+    HAS_DEPTH = True
+except Exception:
+    HAS_DEPTH = False
 
 # ==== 目錄設定 ====
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -54,14 +68,28 @@ for d in (JOBS_DIR, UPLOAD_DIR, RESULT_DIR, MASK_DIR, STATIC_DIR, os.path.dirnam
 
 # ==== Flask & CORS ====
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024  # 2MB 限制（與前端一致）
+CORS(app,
+     resources={r"/*": {"origins": ["*"]}},
+     supports_credentials=False,
+     expose_headers="*",
+     allow_headers=["Content-Type","Authorization"],
+     methods=["GET","POST","OPTIONS"])
+
+# ---- Global JSON error handler ----
+@app.errorhandler(Exception)
+def handle_any_exception(e):
+    code = 500
+    if isinstance(e, HTTPException):
+        code = e.code
+    app.logger.exception("Unhandled error")
+    return jsonify({"error": str(e), "trace": traceback.format_exc()}), code
 
 def _public_base_url():
-    # honor reverse proxy headers for https + host
     proto = request.headers.get("X-Forwarded-Proto", request.scheme)
     host = request.headers.get("X-Forwarded-Host", request.host)
     if host:
         return f"{proto}://{host}".rstrip("/")
-    # fallback to url_root (e.g., http://0.0.0.0:5000/)
     return request.url_root[:-1] if request.url_root.endswith("/") else request.url_root
 
 def _abs_url(path: str) -> str:
@@ -72,13 +100,6 @@ def _abs_url(path: str) -> str:
         path = "/" + path
     return _public_base_url() + path
 
-app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024  # 2MB strict limit
-CORS(app,
-     resources={r"/*": {"origins": ["https://www.atophouse.com", "*"]}},
-     supports_credentials=False,
-     expose_headers="*",
-     allow_headers=["Content-Type","Authorization"],
-     methods=["GET","POST","OPTIONS"])
 # ==== 舊任務狀態（向下相容） ====
 @dataclass
 class Task:
@@ -114,6 +135,17 @@ def save_upload_image(file_storage, out_path: str) -> str:
     im.save(out_path, "JPEG", quality=92)
     return out_path
 
+def save_b64_image(image_b64: str, out_path: str) -> str:
+    if image_b64.startswith("data:"):
+        _, b64 = image_b64.split(",", 1)
+    else:
+        b64 = image_b64
+    raw = base64.b64decode(b64)
+    im = Image.open(io.BytesIO(raw)).convert("RGB")
+    im = correct_image_orientation(im)
+    im.save(out_path, "JPEG", quality=92)
+    return out_path
+
 # ==== 遮罩轉換 ====
 def build_mask_l(image_path: str, mode: str = "smart", opts: dict = None) -> np.ndarray:
     """
@@ -121,7 +153,14 @@ def build_mask_l(image_path: str, mode: str = "smart", opts: dict = None) -> np.
     mode: 'full' → 全白；'smart' → 邊緣/窗戶/邊框保護
     """
     img = cv2.imread(image_path)
-    if img is None: raise ValueError("failed to read image for masking")
+    if img is None:
+        app.logger.error(f"build_mask_l: failed to read image at {image_path}; fallback to full-white mask")
+        try:
+            _im = Image.open(image_path).convert("RGB")
+            w, h = _im.size
+        except Exception:
+            w, h = 1024, 768
+        return np.full((h, w), 255, dtype=np.uint8)
     h, w = img.shape[:2]
     opts = opts or {}
     edge_thresh = int(opts.get("edge_thresh", 28))
@@ -138,7 +177,6 @@ def build_mask_l(image_path: str, mode: str = "smart", opts: dict = None) -> np.
     # 1) 邊緣保護（黑）
     t1, t2 = edge_thresh, max(edge_thresh * 3, edge_thresh + 1)
     edges = cv2.Canny(gray, t1, t2)
-
     mask = np.full((h, w), 255, dtype=np.uint8)
     mask[edges > 0] = 0
 
@@ -163,35 +201,38 @@ def build_mask_l(image_path: str, mode: str = "smart", opts: dict = None) -> np.
     return mask
 
 def l_to_ui_rgba(mask_l: np.ndarray) -> Image.Image:
-    """
-    L 遮罩（白=可改、黑=保護）→ 前端 UI 遮罩（白=鎖、透明=可改）
-    黑(0)=保護 → UI 需白(255,255,255,255)
-    白(255)=可改 → UI 需透明(alpha=0)
-    """
+    """L 遮罩（白=可改、黑=保護）→ 前端 UI 遮罩（白=鎖、透明=可改）"""
     h, w = mask_l.shape[:2]
-    # alpha = (白→0, 黑→255) = invert(L)
-    alpha = 255 - mask_l
+    alpha = 255 - mask_l  # 白→0、黑→255
     rgba = Image.new("RGBA", (w, h), (255, 255, 255, 0))
-    rgba.putalpha(alpha)
-    # 將可視顏色填為白（便於使用者看見「鎖定區域」）
-    rgb = Image.new("RGB", (w, h), (255, 255, 255))
-    rgba = Image.merge("RGBA", (*rgb.split(), rgba.split()[-1]))
+    rgba.putalpha(Image.fromarray(alpha, mode="L"))
     return rgba
 
 def ui_png_to_l(ui_png_path: str) -> np.ndarray:
-    """
-    前端 UI 遮罩 PNG（白=鎖、透明=可改）→ L 遮罩（白=可改、黑=保護）
-    以 alpha 為準： alpha>0 → 鎖（黑=0）；alpha=0 → 可改（白=255）
-    """
+    """前端 UI PNG（白=鎖、透明=可改）→ L 遮罩（白=可改、黑=保護）"""
     im = Image.open(ui_png_path).convert("RGBA")
     a = np.array(im.split()[-1])  # alpha
     l = np.where(a > 0, 0, 255).astype(np.uint8)
     return l
 
+def b64_to_l(b64png: str, size_wh: Optional[tuple]=None) -> np.ndarray:
+    """base64 PNG → L 遮罩；若 size_wh 指定，則 NEAREST resize。"""
+    if b64png.startswith("data:"):
+        _, b64 = b64png.split(",", 1)
+    else:
+        b64 = b64png
+    raw = base64.b64decode(b64)
+    im = Image.open(io.BytesIO(raw))
+    if im.mode != "L":
+        im = im.convert("L")
+    if size_wh and im.size != size_wh:
+        im = im.resize(size_wh, Image.NEAREST)
+    arr = np.array(im)
+    arr = np.where(arr > 127, 255, 0).astype(np.uint8)
+    return arr
+
 def l_to_alpha_png_path(mask_l: np.ndarray, ref_image_path: str, out_path: str) -> str:
-    """
-    L 遮罩（白=可改、黑=保護）→ OpenAI 透明遮罩（alpha=0 可編輯；alpha=255 保護）
-    """
+    """L 遮罩（白=可改、黑=保護）→ OpenAI 透明遮罩（alpha=0 可編輯；alpha=255 保護）"""
     with Image.open(ref_image_path) as ref:
         w, h = ref.size
     if mask_l.shape[:2] != (h, w):
@@ -201,6 +242,11 @@ def l_to_alpha_png_path(mask_l: np.ndarray, ref_image_path: str, out_path: str) 
     rgba.putalpha(Image.fromarray(alpha, mode="L"))
     rgba.save(out_path, "PNG")
     return out_path
+
+def pil_to_b64(im: Image.Image, fmt="PNG") -> str:
+    buf = io.BytesIO()
+    im.save(buf, format=fmt)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
 
 # ==== Jobs 記憶體索引 ====
 @dataclass
@@ -228,64 +274,120 @@ def _job_dir(job_id: str) -> str:
 @app.post("/analyze")
 def analyze():
     """
-    接收 FormData: image
-    建立 jobId，儲存 original.jpg，產「初始 L 遮罩」與「UI 遮罩」，回傳：
-    { jobId, masks: { editable_surface: "/jobs/<id>/masks/ui_mask.png" } }
+    接受 multipart（image）或 JSON（image_b64 / image_data_url）
+    建立 jobId，存 original.jpg，產初始 L 遮罩與 UI 遮罩；
+    回傳：
+    {
+      jobId,
+      original,                                 # 原圖 URL
+      masks: { editable_surface: <ui_mask_url> },# 保留舊欄位（相容）
+      combined_mask_b64,                        # L 遮罩（白=可編）
+      depth_b64?                                # 若可用則附上
+    }
     """
-    if "image" not in request.files:
-        return jsonify({"error": "image file is required"}), 400
-    f = request.files["image"]
-    if not f or not f.filename:
-        return jsonify({"error": "empty image"}), 400
+    image_path = None
+    # multipart
+    if "image" in request.files and request.files["image"].filename:
+        job = _new_job()
+        image_path = os.path.join(job.dir, "original.jpg")
+        save_upload_image(request.files["image"], image_path)
+    else:
+        # JSON
+        data = request.get_json(force=True, silent=True) or {}
+        image_b64 = data.get("image_b64")
+        if not image_b64 and data.get("image_data_url"):
+            durl = data["image_data_url"]
+            idx = durl.find("base64,")
+            if idx >= 0:
+                image_b64 = durl[idx+7:]
+        if not image_b64:
+            return jsonify({"error": "image or image_b64 is required"}), 400
+        job = _new_job()
+        image_path = os.path.join(job.dir, "original.jpg")
+        save_b64_image(image_b64, image_path)
 
-    job = _new_job()
-    orig_path = os.path.join(job.dir, "original.jpg")
-    save_upload_image(f, orig_path)
-    job.original = orig_path
+    job.original = image_path
 
-    # 產生初始智慧遮罩（L）與 UI 遮罩
-    l = build_mask_l(orig_path, mode="smart", opts={
+    # 初始 L 遮罩（S）
+    l = build_mask_l(image_path, mode="smart", opts={
         "edge_thresh": 28, "dilate_px": 6, "margin_ratio": 0.04,
         "protect_windows": True, "window_bright_thresh": 215
     })
     l_path = os.path.join(job.dir, "masks", "initial_L.png")
     Image.fromarray(l, mode="L").save(l_path, "PNG")
+    job.mask_l_path = l_path
 
+    # UI 遮罩（白=鎖、透明=可改），僅作參考（若前端需要）
     ui_im = l_to_ui_rgba(l)
     ui_path = os.path.join(job.dir, "masks", "ui_mask.png")
     ui_im.save(ui_path, "PNG")
-
-    job.mask_l_path = l_path
     job.ui_mask_path = ui_path
+
     JOBS[job.id] = job
+
+    # 深度
+    depth_b64 = None
+    if HAS_DEPTH:
+        try:
+            pil = Image.open(image_path).convert("RGB")
+            d01 = infer_depth_map(pil)
+            depth_b64 = depth_to_b64(d01)
+        except Exception:
+            depth_b64 = None
 
     return jsonify({
         "jobId": job.id,
         "original": _abs_url(f"/jobs/{job.id}/original.jpg"),
-        "masks": {"editable_surface": _abs_url(f"/jobs/{job.id}/masks/ui_mask.png")}
-    })# ==== API: /masks/save ====
+        "masks": {"editable_surface": _abs_url(f"/jobs/{job.id}/masks/ui_mask.png")},
+        "combined_mask_b64": pil_to_b64(Image.fromarray(l, mode="L"), "PNG"),
+        "depth_b64": depth_b64
+    })
+
+# ==== API: /masks/save ====
 @app.post("/masks/save")
 def save_mask():
     """
-    接收前端修正後的 UI 遮罩（PNG，白=鎖、透明=可改）→ 轉 L（白=可改）覆蓋 job 的最終遮罩
-    FormData: jobId, mask(file)
+    接收「最終遮罩」並儲存為 L 遮罩（白=可編輯、黑=保護）。
+    支援兩種呼叫：
+    1) multipart: jobId + mask(file: PNG，前端 UI 遮罩 or L 遮罩)
+    2) JSON: { job_id|jobId, mask_final_b64|combined_mask_b64|mask_b64 }
     """
-    job_id = request.form.get("jobId", "").strip()
-    if not job_id or job_id not in JOBS:
-        return jsonify({"error": "invalid jobId"}), 400
-    if "mask" not in request.files:
-        return jsonify({"error": "mask file required"}), 400
+    job_id = None
+    mask_l = None
 
-    job = JOBS[job_id]
-    ui_path = os.path.join(job.dir, "masks", "ui_mask.png")
-    request.files["mask"].save(ui_path)
-    job.ui_mask_path = ui_path
+    if request.files:
+        job_id = request.form.get("jobId") or request.form.get("job_id")
+        if not job_id or job_id not in JOBS:
+            return jsonify({"error": "invalid jobId"}), 400
+        if "mask" not in request.files:
+            return jsonify({"error": "mask file required"}), 400
+        job = JOBS[job_id]
+        tmp = os.path.join(job.dir, "masks", "incoming.png")
+        request.files["mask"].save(tmp)
+        # 嘗試判斷：若是 UI PNG（看 alpha），轉 L；若是 L 灰階，直接讀
+        im = Image.open(tmp).convert("RGBA")
+        if im.split()[-1].getextrema() != (255, 255):  # 有透明度 → 視為 UI
+            mask_l = ui_png_to_l(tmp)
+        else:
+            mask_l = np.array(im.convert("L"))
+            mask_l = np.where(mask_l > 127, 255, 0).astype(np.uint8)
+    else:
+        data = request.get_json(force=True, silent=True) or {}
+        job_id = data.get("job_id") or data.get("jobId")
+        if not job_id or job_id not in JOBS:
+            return jsonify({"error": "invalid jobId"}), 400
+        b64 = data.get("mask_final_b64") or data.get("combined_mask_b64") or data.get("mask_b64")
+        if not b64:
+            return jsonify({"error": "missing mask"}), 400
+        # decode → L
+        job = JOBS[job_id]
+        with Image.open(job.original) as ref:
+            W, H = ref.size
+        mask_l = b64_to_l(b64, size_wh=(W, H))
 
-    l = ui_png_to_l(ui_path)
-    l_path = os.path.join(job.dir, "masks", "final_L.png")
-    Image.fromarray(l, mode="L").save(l_path, "PNG")
-    job.mask_l_path = l_path
-
+    l_path = os.path.join(JOBS[job_id].dir, "masks", "final_L.png")
+    Image.fromarray(mask_l, mode="L").save(l_path, "PNG")
+    JOBS[job_id].mask_l_path = l_path
     return jsonify({"ok": True, "jobId": job_id})
 
 # ==== API: /render/batch ====
@@ -293,7 +395,7 @@ def save_mask():
 def render_batch():
     """
     JSON: { jobId, styles: [..max3], palette:{main,acc1,acc2,acc3}, logo:{pos,scale,opacity} }
-    回傳：{ images: [{style,url}], qc: {<style>:{keypoint_error:...}} }
+    回傳：{ images: [{style,url}], qc: {...} }
     """
     data = request.get_json(force=True, silent=False)
     job_id = (data.get("jobId") or "").strip()
@@ -309,9 +411,10 @@ def render_batch():
     job = JOBS[job_id]
     if not job.mask_l_path or not os.path.exists(job.mask_l_path):
         # 若使用者未儲存，沿用 initial
-        if not os.path.exists(os.path.join(job.dir, "masks", "initial_L.png")):
+        init_path = os.path.join(job.dir, "masks", "initial_L.png")
+        if not os.path.exists(init_path):
             return jsonify({"error": "mask not ready"}), 400
-        job.mask_l_path = os.path.join(job.dir, "masks", "initial_L.png")
+        job.mask_l_path = init_path
 
     # 準備 OpenAI 透明遮罩
     alpha_path = os.path.join(job.dir, "masks", "oa_alpha.png")
@@ -335,17 +438,15 @@ def render_batch():
             scale = float(logo.get("scale", 0.18) or 0.18)
             opacity = float(logo.get("opacity", 0.9) or 0.9)
             try:
-                add_logo(tmp_path, LOGO_PATH, out_png, logo_ratio=scale, position=pos, opacity=opacity)
-                if os.path.exists(tmp_path):
-                    try:
-                        os.remove(tmp_path)
-                    except Exception:
-                        pass
+                if os.path.exists(LOGO_PATH):
+                    add_logo(tmp_path, LOGO_PATH, out_png, logo_ratio=scale, position=pos, opacity=opacity)
+                    os.remove(tmp_path)
+                else:
+                    out_png = tmp_path
             except Exception:
-                # 沒 LOGO 或失敗：直接使用原圖
                 out_png = tmp_path
             results.append({"style": style, "url": _abs_url(f"/jobs/{job.id}/outputs/{os.path.basename(out_png)}")})
-            qc[style] = {"keypoint_error": ""}  # 可擴充：關鍵點比對
+            qc[style] = {"keypoint_error": ""}
         except Exception as e:
             results.append({"style": style, "url": "", "error": str(e)})
             qc[style] = {"keypoint_error": ""}
@@ -371,6 +472,7 @@ def upload_mask():
     fpath = os.path.join(user_dir, fname)
     request.files["mask"].save(fpath)
     return jsonify({"maskUrl": _abs_url(f"/jobs/{job.id}/masks/user/{fname}")})
+
 # ==== API: /render/furniture-edit ====
 @app.post("/render/furniture-edit")
 def furniture_edit():
@@ -394,6 +496,7 @@ def furniture_edit():
 
     # 解析遮罩路徑
     mask_url = data.get("mask") or ""
+
     def to_local_path(p: str) -> Optional[str]:
         if not p:
             return None
@@ -417,7 +520,6 @@ def furniture_edit():
     if baseImageId:
         base_path = to_local_path(baseImageId)
         if not base_path and os.path.isdir(os.path.join(job.dir, "outputs")):
-            # 當作 style token，找 outputs 內檔名含 token 的最新一張
             outs = sorted(
                 [os.path.join(job.dir, "outputs", f) for f in os.listdir(os.path.join(job.dir, "outputs")) if baseImageId in f],
                 key=lambda p: os.path.getmtime(p),
@@ -429,7 +531,13 @@ def furniture_edit():
         base_path = job.original
 
     # 轉為 OpenAI 用透明遮罩
-    l = ui_png_to_l(mask_path)
+    im = Image.open(mask_path).convert("RGBA")
+    if im.mode == "RGBA" and im.split()[-1].getextrema() != (255, 255):
+        # UI PNG → L
+        l = ui_png_to_l(mask_path)
+    else:
+        l = np.array(im.convert("L"))
+        l = np.where(l > 127, 255, 0).astype(np.uint8)
     alpha_png = os.path.join(job.dir, "alpha_runtime.png")
     l_to_alpha_png_path(l, base_path, alpha_png)
 
@@ -442,14 +550,11 @@ def furniture_edit():
         spec = data.get("spec", "modern sofa with metal legs")
         prompt = f"Replace the selected object with: {spec}. Keep camera angle, structure, windows/doors positions, and layout exactly the same. Only modify within the mask."
 
-    # 調 OpenAI 編輯
-    from dalle_api import edit_image_with_mask
     try:
         img_bytes = edit_image_with_mask(base_path, alpha_png, prompt, size="1024x1024")
     except Exception as e:
         return jsonify({"error": f"OpenAI edit failed: {e}"}), 500
 
-    # 存檔
     out_dir = os.path.join(job.dir, "outputs")
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, f"edit_{uuid.uuid4().hex}.png")
@@ -475,7 +580,6 @@ def _work_task(task_id: str, image_path: str, mask_l_path: str, style: str, colo
         if not task: return
         task.status = "pending"
     try:
-        # 解析 colors（可為 "主色,配1,配2,配3" 或 HEX）
         def _parse_colors(s: str):
             s = (s or "").strip()
             if not s: return {}
@@ -484,6 +588,7 @@ def _work_task(task_id: str, image_path: str, mask_l_path: str, style: str, colo
             parts = [x.strip() for x in s.replace("，", ",").split(",") if x.strip()]
             keys = ["main","acc1","acc2","acc3"]
             return {k:v for k,v in zip(keys, parts)}
+
         colors_dict = _parse_colors(colors)
         prompt = build_style_prompt(style, colors=colors_dict, enforce_hard_rules=True)
 
@@ -530,7 +635,6 @@ def generate_legacy():
         return jsonify({"status": "failed", "error": "style and colors are required"}), 400
 
     # 存原圖
-    # 支援 dataURL / 純 base64
     if image_b64.startswith("data:"):
         _, b64 = image_b64.split(",", 1)
     else:
@@ -559,7 +663,7 @@ def status_legacy(task_id):
         task = TASKS.get(task_id)
         if not task:
             return jsonify({"status": "failed", "error": "task not found"}), 404
-        
+
         def _abs(v):
             try:
                 return _abs_url(v) if v else v
@@ -573,6 +677,7 @@ def status_legacy(task_id):
             "styled_image_url": _abs(task.styled_image_url),
             "created_at": task.created_at,
         })
+
 # ==== 健康檢查 ====
 @app.get("/healthz")
 def healthz():

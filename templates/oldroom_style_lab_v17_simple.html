@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/>
+  <title>舊屋換新風格｜v1.7L（單一最終遮罩）— 測試全流程</title>
+  <style>
+    :root{ --bg:#0b0c10; --panel:#15171c; --muted:#a4a8b3; --accent:#4cc9f0; --ok:#22c55e; --warn:#f59e0b; --err:#ef4444; --ink:#e5e7eb; --shadow:0 8px 30px rgba(0,0,0,.3); --radius:16px; }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", Arial}
+    h1,h2{margin:.2rem 0 1rem}
+    a{color:var(--accent);text-decoration:none}
+    .app{max-width:1100px;margin:24px auto;padding:12px}
+    .grid{display:grid;gap:12px}
+    .row-2{grid-template-columns:1fr 1fr}
+    .row-3{grid-template-columns:1fr 1fr 1fr}
+    .card{background:var(--panel);border:1px solid #22252d;padding:14px;border-radius:var(--radius);box-shadow:var(--shadow)}
+    .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    .btn{background:#1e2129;border:1px solid #2a2e38;color:var(--ink);padding:8px 12px;border-radius:12px;cursor:pointer}
+    .btn:hover{filter:brightness(1.1)}
+    .btn.primary{background:linear-gradient(180deg,#2a6df2,#1b4fda);border-color:#2a6df2}
+    .btn.ok{background:#124e2d;border-color:#1f6d41}
+    .btn.warn{background:#462f0d;border-color:#7c4d11}
+    .btn.err{background:#4d1111;border-color:#7f1d1d}
+    .btn.ghost{background:transparent;border:1px dashed #3a3f4d}
+    .pill{padding:6px 10px;border-radius:999px;border:1px solid #323645;background:#111218;color:var(--muted)}
+    input[type="file"]{display:block}
+    input[type="text"], input[type="url"], input[type="number"], select{ background:#10131a;border:1px solid #2a2e38;color:var(--ink);padding:8px 10px;border-radius:10px;min-width:0 }
+    .hint{color:var(--muted);font-size:12px}
+    .gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+    .tile{background:#0f1117;border:1px solid #242836;border-radius:14px;overflow:hidden;display:flex;flex-direction:column}
+    .tile img{width:100%;display:block;aspect-ratio:1/1;object-fit:cover;background:#0b0c10}
+    .tile .meta{padding:10px;border-top:1px solid #242836;display:flex;justify-content:space-between;align-items:center;gap:8px}
+    canvas{max-width:100%;border-radius:12px;border:1px solid #2a2e38;background:#0d0f14}
+    .stack{position:relative;width:100%;max-width:100%}
+    .stack canvas, .stack img{width:100%;height:auto;display:block}
+    .overlay{position:absolute;left:0;top:0}
+    .divider{height:1px;background:#232631;margin:12px 0}
+    .kv{display:grid;grid-template-columns:160px 1fr;gap:8px;align-items:center}
+    .chips{display:flex;gap:8px;flex-wrap:wrap}
+    .chip{border:1px solid #2e3340;background:#0b0d12;padding:6px 10px;border-radius:999px;cursor:pointer}
+    .chip input{margin-right:6px}
+    .status{padding:8px 10px;border-radius:10px;background:#0d1118;border:1px solid #222635;color:#cbd5e1}
+    .status.ok{border-color:#1d5e39;color:#86efac}
+    .status.err{border-color:#7f1d1d;color:#fecaca}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .right{margin-left:auto}
+    .small{font-size:12px}
+    .legend{display:flex;gap:10px;align-items:center}
+    .dot{width:10px;height:10px;border-radius:3px;display:inline-block}
+    .dot.green{background:#16a34a}.dot.red{background:#ef4444}
+  </style>
+</head>
+
+<body>
+<div class="app" id="app">
+  <h1>舊屋換新風格｜v1.7L（單一最終遮罩）— 測試全流程</h1>
+
+  <div class="card">
+    <div class="toolbar">
+      <div class="kv">
+        <label>API Base</label>
+        <input id="apiBase" type="url" value="https://oldroomchange-image3.onrender.com" placeholder="https://your-backend.example.com" />
+      </div>
+      <button class="btn" id="btnHealth">健康檢查</button>
+      <div id="healthStatus" class="status">尚未檢查</div>
+    </div>
+    <div class="hint">這份測試檔涵蓋：/healthz、/analyze（JSON）、/masks/save（JSON）、/render/batch（JSON）、/render/furniture-edit（JSON）。</div>
+  </div>
+
+  <!-- STEP 1：上傳 -->
+  <div class="grid row-2">
+    <div class="card">
+      <h2>Step 1：上傳舊屋照片（≤2MB）</h2>
+      <input id="fileInput" type="file" accept="image/*" />
+      <div class="hint">上傳後即時預覽；後續所有計算與生成均以此尺寸與視角為基準。</div>
+      <div class="divider"></div>
+      <div class="stack" id="previewStack" style="display:none">
+        <img id="imgPreview" alt="原圖預覽" />
+        <!-- Final mask 疊圖（可編輯） -->
+        <canvas id="canvasFinal" class="overlay"></canvas>
+        <!-- 參考：S（結構） -->
+        <canvas id="canvasS" class="overlay" style="mix-blend-mode:screen;opacity:.35;display:none"></canvas>
+        <!-- 參考：D（深度） -->
+        <canvas id="canvasD" class="overlay" style="mix-blend-mode:screen;opacity:.35;display:none"></canvas>
+      </div>
+      <div class="legend small" style="margin-top:8px">
+        <span class="dot green"></span><span>綠：可風格化（對應「白=可編輯」）</span>
+        <span class="dot red"></span><span>紅：保護（對應「黑=不可改」）</span>
+      </div>
+      <div class="hint small">遮罩語意（統一）：<b>白=可編輯，黑=保護</b>；送往 OpenAI 時會轉為「透明=可編輯、不透明=保護」。</div>
+    </div>
+
+    <!-- STEP 2：S∧D→Final -->
+    <div class="card">
+      <h2>Step 2：自動偵測 → 合成 M0 = S ∧ D →「最後只改 Final」</h2>
+      <div class="toolbar">
+        <button class="btn primary" id="btnAnalyze">呼叫 /analyze（JSON）</button>
+        <span id="detectStatus" class="status">待執行</span>
+      </div>
+      <div class="divider"></div>
+
+      <div class="row">
+        <label class="pill"><input type="checkbox" id="toggleS"> 顯示 S（結構參考）</label>
+        <label class="pill"><input type="checkbox" id="toggleD"> 顯示 D（深度參考）</label>
+      </div>
+
+      <div class="kv" style="margin-top:8px">
+        <label>深度範圍（0~255）</label>
+        <div class="row">
+          <input id="depthMin" type="number" min="0" max="255" value="0" style="width:90px">
+          <input id="depthMax" type="number" min="0" max="255" value="255" style="width:90px">
+          <button class="btn" id="btnRebuild">重新合成 M0 = S ∧ D</button>
+        </div>
+      </div>
+      <div class="hint small">若 /analyze 沒回 depth，系統視 D=全白（只根據 S）。</div>
+
+      <div class="divider"></div>
+      <div class="row">
+        <label class="pill"><input type="radio" name="tool" value="brush" checked> 畫筆(白=可編輯)</label>
+        <label class="pill"><input type="radio" name="tool" value="eraser"> 橡皮擦(黑=保護)</label>
+        <label>粗細 <input id="brushSize" type="range" min="3" max="80" value="18"></label>
+        <button class="btn" id="btnUndo">復原</button>
+        <button class="btn ghost" id="btnResetFinal">還原成 M0</button>
+      </div>
+
+      <div class="divider"></div>
+      <div class="toolbar">
+        <button class="btn ok" id="btnSaveMask">儲存最終遮罩 → /masks/save</button>
+        <span id="maskStatus" class="status">尚未儲存</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 3：風格 + 色系 + LOGO -->
+  <div class="card">
+    <h2>Step 3：選 1~3 風格 + 統一色系 + LOGO</h2>
+    <div class="chips" id="styleChips"></div>
+    <div class="divider"></div>
+    <div class="grid row-3">
+      <div class="card">
+        <div class="kv"><label>主色</label><input id="colorMain" type="color" value="#2c3e50"/></div>
+        <div class="kv"><label>配色 A</label><input id="colorA" type="color" value="#e67e22"/></div>
+        <div class="kv"><label>配色 B</label><input id="colorB" type="color" value="#bdc3c7"/></div>
+        <div class="kv"><label>配色 C</label><input id="colorC" type="color" value="#27ae60"/></div>
+      </div>
+      <div class="card">
+        <div class="kv"><label>公司 LOGO</label><input id="logoInput" type="file" accept="image/*"/></div>
+        <div class="kv"><label>Logo 位置</label>
+          <select id="logoPos">
+            <option value="br">右下</option><option value="tr">右上</option><option value="bl">左下</option><option value="tl">左上</option>
+          </select>
+        </div>
+        <div class="kv"><label>透明度</label><input id="logoAlpha" type="range" min="20" max="100" value="85"/></div>
+      </div>
+      <div class="card">
+        <div class="kv"><label>一次產出張數</label>
+          <select id="imgCount"><option>1</option><option selected>2</option><option>3</option></select>
+        </div>
+        <div class="kv"><label>模型</label><input type="text" value="gpt-image-1" disabled/></div>
+      </div>
+    </div>
+    <div class="toolbar" style="margin-top:8px">
+      <button class="btn primary" id="btnGenerate">生成多張 → /render/batch</button>
+      <span id="genStatus" class="status">尚未開始</span>
+    </div>
+  </div>
+
+  <!-- STEP 4：對照牆 -->
+  <div class="card">
+    <h2>Step 4：風格對照牆</h2>
+    <div id="gallery" class="gallery"></div>
+    <div class="hint">點「選這張」進入家具微調；或直接「下載」單張。</div>
+  </div>
+
+  <!-- STEP 5：家具微調 -->
+  <div class="card" id="furniturePanel" style="display:none">
+    <h2>Step 5：家具微調 → /render/furniture-edit</h2>
+    <div class="grid row-3">
+      <div class="card">
+        <div class="kv"><label>家具類別</label>
+          <select id="fKind"><option>沙發</option><option>茶几</option><option>餐桌椅</option><option>吊燈</option><option>地毯</option><option>書櫃</option><option>電視櫃</option><option>床架</option><option>衣櫃</option></select>
+        </div>
+        <div class="kv"><label>顏色</label><input id="fColor" type="color" value="#2196f3"/></div>
+        <div class="kv"><label>材質(可填)</label><input id="fMat" type="text" placeholder="皮革/亞麻/原木/金屬..."/></div>
+        <div class="kv"><label>操作</label>
+          <select id="fOp"><option value="add">新增</option><option value="replace">更換</option><option value="recolor">換顏色</option><option value="remove">移除</option></select>
+        </div>
+        <button class="btn" id="btnApplyFurniture">套用變更</button>
+        <span id="furnStatus" class="status">待操作</span>
+      </div>
+      <div class="card" style="grid-column: span 2">
+        <div class="row">
+          <div class="pill">已選圖片：<span id="chosenStyle" style="color:#93c5fd">-</span></div>
+          <button class="btn ghost right" id="btnBackToGallery">返回對照牆</button>
+        </div>
+        <div id="chosenWrap" class="stack" style="margin-top:10px"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 6：下載 -->
+  <div class="card">
+    <h2>Step 6：最終下載</h2>
+    <div class="toolbar">
+      <button class="btn ok" id="btnFinalDownload">下載目前預覽(備援前端疊LOGO)</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <details><summary>顯示 JSON 請求/回應（除錯）</summary><pre id="debug" style="white-space:pre-wrap"></pre></details>
+  </div>
+</div>
+
+<script>
+(function(){
+  const endpoints = {
+    healthz: () => `${apiBase()}/healthz`,
+    analyze: () => `${apiBase()}/analyze`,
+    saveMask: () => `${apiBase()}/masks/save`,
+    renderBatch: () => `${apiBase()}/render/batch`,
+    furnEdit: () => `${apiBase()}/render/furniture-edit`,
+  };
+  function apiBase(){ return document.getElementById('apiBase').value.trim().replace(/\/+$/,''); }
+  const el = id => document.getElementById(id);
+  const debug = el('debug');
+
+  // Elements
+  const fileInput = el('fileInput');
+  const imgPreview = el('imgPreview');
+  const previewStack = el('previewStack');
+  const canvasFinal = el('canvasFinal');
+  const canvasS = el('canvasS');
+  const canvasD = el('canvasD');
+  const ctxF = canvasFinal.getContext('2d');
+  const ctxS = canvasS.getContext('2d');
+  const ctxD = canvasD.getContext('2d');
+  const detectStatus = el('detectStatus');
+  const maskStatus = el('maskStatus');
+  const genStatus = el('genStatus');
+  const gallery = el('gallery');
+  const furniturePanel = el('furniturePanel');
+  const chosenWrap = el('chosenWrap');
+  const chosenStyle = el('chosenStyle');
+  const logoInput = el('logoInput');
+
+  const state = {
+    originalFile: null,
+    originalDataURL: null,
+    jobId: null,
+    S_img: null, depth_img: null,
+    drawing:false, tool:'brush', brushSize:18,
+    finalHistory: [], historyLimit: 30,
+    results: [], selectedIndex: -1
+  };
+
+  function setStatus(elm, text, kind){
+    elm.textContent = text;
+    elm.className = 'status' + (kind ? ' ' + kind : '');
+  }
+  function logDbg(obj){ debug.textContent = (typeof obj === 'string') ? obj : JSON.stringify(obj, null, 2); }
+  function readFileAsDataURL(file){
+    return new Promise((res,rej)=>{ const fr=new FileReader(); fr.onload=()=>res(fr.result); fr.onerror=rej; fr.readAsDataURL(file); });
+  }
+  function loadImage(src){
+    return new Promise((resolve, reject)=>{ const im=new Image(); im.crossOrigin='anonymous'; im.onload=()=>resolve(im); im.onerror=reject; im.src=src; });
+  }
+  function dataURLToPureB64(durl){ const i=durl.indexOf('base64,'); return i>=0? durl.slice(i+7): durl; }
+  function toBWDataURLFromCanvas(cnv){
+    const tctx = cnv.getContext('2d');
+    const imgd = tctx.getImageData(0,0,cnv.width,cnv.height);
+    const d = imgd.data;
+    for(let i=0;i<d.length;i+=4){
+      const v=(d[i]+d[i+1]+d[i+2])/3;
+      const bw = v>127?255:0;
+      d[i]=d[i+1]=d[i+2]=bw; d[i+3]=255;
+    }
+    tctx.putImageData(imgd,0,0);
+    return cnv.toDataURL('image/png');
+  }
+  function pushFinalHistory(){
+    canvasFinal.toBlob(b=>{ state.finalHistory.push(b); if(state.finalHistory.length>state.historyLimit) state.finalHistory.shift(); });
+  }
+  async function applyFinalBlob(b){
+    const url = URL.createObjectURL(b);
+    const im = await loadImage(url);
+    ctxF.clearRect(0,0,canvasFinal.width,canvasFinal.height);
+    ctxF.drawImage(im,0,0,canvasFinal.width,canvasFinal.height);
+  }
+
+  // Health
+  el('btnHealth').addEventListener('click', async ()=>{
+    setStatus(el('healthStatus'),'檢查中…');
+    try{ const r = await fetch(endpoints.healthz(), {mode:'cors'}); setStatus(el('healthStatus'), r.ok?'後端連線正常':`HTTP ${r.status}`, r.ok?'ok':'err'); }
+    catch(e){ setStatus(el('healthStatus'),`錯誤: ${e.message}`,'err'); }
+  });
+
+  // Upload
+  fileInput.addEventListener('change', async (e)=>{
+    const f = e.target.files[0]; if(!f) return;
+    if(f.size>2*1024*1024){ alert('檔案超過 2MB'); fileInput.value=''; return; }
+    state.originalFile = f;
+    state.originalDataURL = await readFileAsDataURL(f);
+    imgPreview.src = state.originalDataURL;
+    await new Promise(r=>imgPreview.onload=r);
+    previewStack.style.display = '';
+    [canvasFinal, canvasS, canvasD].forEach(c=>{ c.width = imgPreview.naturalWidth; c.height = imgPreview.naturalHeight; });
+    ctxF.clearRect(0,0,canvasFinal.width,canvasFinal.height);
+    ctxS.clearRect(0,0,canvasS.width,canvasS.height);
+    ctxD.clearRect(0,0,canvasD.width,canvasD.height);
+    state.finalHistory.length=0; pushFinalHistory();
+    state.jobId=null; state.S_img=null; state.depth_img=null;
+    setStatus(detectStatus,'待執行'); setStatus(maskStatus,'尚未儲存');
+    gallery.innerHTML=''; state.results=[]; furniturePanel.style.display='none'; state.selectedIndex=-1;
+  });
+
+  // Analyze
+  el('btnAnalyze').addEventListener('click', async ()=>{
+    if(!state.originalDataURL){ alert('請先上傳圖片'); return; }
+    setStatus(detectStatus,'分析中…');
+    try{
+      const payload = { image_b64: dataURLToPureB64(state.originalDataURL), image_data_url: state.originalDataURL, return: ['combined_mask','depth'] };
+      const resp = await fetch(endpoints.analyze(), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload), mode:'cors'});
+      const ct = resp.headers.get('content-type')||'';
+      if(!resp.ok){ setStatus(detectStatus,`HTTP ${resp.status}`,'err'); logDbg(await resp.text()); return; }
+      if(!ct.includes('application/json')){ setStatus(detectStatus,'回傳非 JSON','err'); logDbg(await resp.text()); return; }
+      const data = await resp.json(); logDbg(data);
+      state.jobId = data.jobId || data.job_id || null;
+      // S
+      let sSrc = data.combined_mask_b64 ? 'data:image/png;base64,'+data.combined_mask_b64 :
+                 data.mask_b64 ? 'data:image/png;base64,'+data.mask_b64 :
+                 data.combined_mask_url || data.mask_url || null;
+      if(sSrc){ const im = await loadImage(sSrc); ctxS.clearRect(0,0,canvasS.width,canvasS.height); ctxS.drawImage(im,0,0,canvasS.width,canvasS.height); state.S_img = im; }
+      // depth
+      let dSrc = data.depth_b64 ? 'data:image/png;base64,'+data.depth_b64 : data.depth_url || null;
+      if(dSrc){ const im = await loadImage(dSrc); ctxD.clearRect(0,0,canvasD.width,canvasD.height); ctxD.drawImage(im,0,0,canvasD.width,canvasD.height); state.depth_img = im; }
+      // Build M0 (S ∧ D)
+      buildM0();
+      setStatus(detectStatus,'完成','ok');
+    }catch(e){ setStatus(detectStatus,`錯誤: ${e.message}`,'err'); }
+  });
+
+  function buildM0(){
+    const w = canvasFinal.width, h = canvasFinal.height;
+    const Sd = ctxS.getImageData(0,0,w,h);
+    const Dd = ctxD.getImageData(0,0,w,h);
+    const useDepth = !!state.depth_img;
+    const minV = Math.max(0,Math.min(255, +el('depthMin').value||0));
+    const maxV = Math.max(0,Math.min(255, +el('depthMax').value||255));
+    const Fd = ctxF.createImageData(w,h);
+    for(let i=0;i<Fd.data.length;i+=4){
+      const s = Sd.data[i];
+      let d = 255;
+      if(useDepth){ const v = Dd.data[i]; d = (v>=minV && v<=maxV) ? 255 : 0; }
+      const v = (s>127 && d>127) ? 255 : 0;
+      Fd.data[i]=Fd.data[i+1]=Fd.data[i+2]=v; Fd.data[i+3]=255;
+    }
+    ctxF.putImageData(Fd,0,0);
+    pushFinalHistory();
+    paintOverlayColors();
+  }
+  function paintOverlayColors(){
+    const w=canvasFinal.width,h=canvasFinal.height;
+    const imgd=ctxF.getImageData(0,0,w,h);
+    const overlay=document.createElement('canvas'); overlay.width=w; overlay.height=h;
+    const ox=overlay.getContext('2d'); const col=ox.createImageData(w,h);
+    for(let i=0;i<imgd.data.length;i+=4){
+      const v=imgd.data[i]; const g=(v>127);
+      col.data[i]=g?22:239; col.data[i+1]=g?163:68; col.data[i+2]=g?74:68; col.data[i+3]=90;
+    }
+    ox.putImageData(col,0,0); ctxF.putImageData(imgd,0,0); ctxF.drawImage(overlay,0,0);
+  }
+  el('toggleS').addEventListener('change', e=>{ canvasS.style.display = e.target.checked? '' : 'none'; });
+  el('toggleD').addEventListener('change', e=>{ canvasD.style.display = e.target.checked? '' : 'none'; });
+  el('depthMin').addEventListener('change', buildM0); el('depthMax').addEventListener('change', buildM0);
+  el('btnRebuild').addEventListener('click', buildM0);
+
+  // Drawing on Final
+  document.querySelectorAll('input[name=tool]').forEach(r=> r.addEventListener('change', ()=> state.tool = r.value));
+  el('brushSize').addEventListener('input', e=> state.brushSize = +e.target.value);
+
+  function pointerPos(evt){
+    const rect = canvasFinal.getBoundingClientRect();
+    const x = (evt.clientX - rect.left) * (canvasFinal.width/rect.width);
+    const y = (evt.clientY - rect.top) * (canvasFinal.height/rect.height);
+    return {x,y};
+  }
+  function drawDot(x,y){
+    const r = state.brushSize/2;
+    const imgd = ctxF.getImageData(0,0,canvasFinal.width,canvasFinal.height);
+    const d = imgd.data;
+    const minx = Math.max(0, Math.floor(x-r)), maxx = Math.min(canvasFinal.width-1, Math.ceil(x+r));
+    const miny = Math.max(0, Math.floor(y-r)), maxy = Math.min(canvasFinal.height-1, Math.ceil(y+r));
+    for(let yy=miny; yy<=maxy; yy++){
+      for(let xx=minx; xx<=maxx; xx++){
+        const dx = xx-x, dy = yy-y;
+        if(dx*dx+dy*dy <= r*r){
+          const idx = (yy*canvasFinal.width + xx)*4;
+          const v = (state.tool==='brush') ? 255 : 0;
+          d[idx]=d[idx+1]=d[idx+2]=v; d[idx+3]=255;
+        }
+      }
+    }
+    ctxF.putImageData(imgd,0,0);
+    paintOverlayColors();
+  }
+  function startDraw(e){ state.drawing=true; const p=(e.touches?.[0])?e.touches[0]:e; const {x,y}=pointerPos(p); drawDot(x,y); e.preventDefault(); }
+  function moveDraw(e){ if(!state.drawing) return; const p=(e.touches?.[0])?e.touches[0]:e; const {x,y}=pointerPos(p); drawDot(x,y); e.preventDefault(); }
+  function endDraw(){ if(!state.drawing) return; state.drawing=false; pushFinalHistory(); }
+  canvasFinal.addEventListener('mousedown', startDraw);
+  canvasFinal.addEventListener('mousemove', moveDraw);
+  window.addEventListener('mouseup', endDraw);
+  canvasFinal.addEventListener('touchstart', startDraw, {passive:false});
+  canvasFinal.addEventListener('touchmove', moveDraw, {passive:false});
+  canvasFinal.addEventListener('touchend', endDraw);
+
+  el('btnUndo').addEventListener('click', async ()=>{
+    if(state.finalHistory.length<=1) return;
+    state.finalHistory.pop();
+    const last = state.finalHistory[state.finalHistory.length-1];
+    await applyFinalBlob(last); paintOverlayColors();
+  });
+  el('btnResetFinal').addEventListener('click', ()=>{ buildM0(); setStatus(maskStatus,'尚未儲存'); });
+
+  // Save final -> /masks/save
+  el('btnSaveMask').addEventListener('click', async ()=>{
+    const bw = toBWDataURLFromCanvas(canvasFinal);
+    const b64 = dataURLToPureB64(bw);
+    setStatus(maskStatus,'上傳中…');
+    try{
+      const payload = { job_id: state.jobId, mask_final_b64: b64, combined_mask_b64: b64, mask_b64: b64 };
+      const resp = await fetch(endpoints.saveMask(), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload), mode:'cors'});
+      setStatus(maskStatus, resp.ok?'已儲存':'儲存失敗', resp.ok?'ok':'err');
+    }catch(e){ setStatus(maskStatus,`錯誤: ${e.message}`,'err'); }
+  });
+
+  // Styles list
+  const STYLE_LIST = [
+    '古典風 Classic','輕奢古典 Neo-classical','現代風 Modern','北歐風 Scandinavian','工業風 Industrial',
+    '地中海 Mediterranean','日式和風 Japandi','鄉村風 Country','混搭風 Eclectic','極簡風 Minimalist',
+    '奢華風 Luxury','新東方 Oriental','波西米亞 Boho'
+  ];
+  const chips = el('styleChips');
+  STYLE_LIST.forEach((name)=>{ const c=document.createElement('label'); c.className='chip'; c.innerHTML=`<input type="checkbox" data-style="${name}"/>${name}`; chips.appendChild(c); });
+  function selectedStyles(){ return [...chips.querySelectorAll('input[type=checkbox]:checked')].map(i=>i.dataset.style).slice(0,3); }
+
+  // Generate
+  el('btnGenerate').addEventListener('click', async ()=>{
+    if(!state.originalDataURL){ alert('請先上傳圖片'); return; }
+    const styles = selectedStyles(); if(styles.length===0){ alert('請至少選一種風格'); return; }
+    const palette = { main: el('colorMain').value, a: el('colorA').value, b: el('colorB').value, c: el('colorC').value };
+    const count = +el('imgCount').value;
+    const bw = toBWDataURLFromCanvas(canvasFinal);
+    const payload = {
+      jobId: state.jobId,
+      image_b64: dataURLToPureB64(state.originalDataURL),   // 兼容你的後端若需要
+      combined_mask_b64: dataURLToPureB64(bw),
+      styles, palette, count,
+      logo_b64: null, logo_pos: el('logoPos').value, logo_alpha: (+el('logoAlpha').value)/100
+    };
+    const logoFile = logoInput.files?.[0]; if(logoFile){ const durl = await readFileAsDataURL(logoFile); payload.logo_b64 = dataURLToPureB64(durl); }
+    setStatus(genStatus,'生成中…');
+    try{
+      const resp = await fetch(endpoints.renderBatch(), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload), mode:'cors'});
+      const ct = resp.headers.get('content-type')||'';
+      if(!resp.ok){ setStatus(genStatus,`HTTP ${resp.status}`,'err'); logDbg(await resp.text()); return; }
+      if(!ct.includes('application/json')){ setStatus(genStatus,'回傳非 JSON','err'); logDbg(await resp.text()); return; }
+      const data = await resp.json(); logDbg(data);
+      const arr = data.results || data.images || data.images_b64 || [];
+      const results = [];
+      if(Array.isArray(arr)){
+        arr.forEach((item, i)=>{
+          if(typeof item==='string'){
+            const isB64 = /^[A-Za-z0-9+/=]+$/.test(item.slice(0,50));
+            results.push({ style: styles[i%styles.length]||`風格${i+1}`, src: isB64? `data:image/png;base64,${item}` : item });
+          }else if(item){
+            const src = item.image_b64? `data:image/png;base64,${item.image_b64}` : (item.url||item.src);
+            results.push({ style: item.style || styles[i%styles.length]||`風格${i+1}`, src });
+          }
+        });
+      }
+      if(results.length===0){ setStatus(genStatus,'無結果','err'); return; }
+      state.results = results; renderGallery(); setStatus(genStatus,`完成 ${results.length} 張`,'ok');
+      window.scrollTo({top: document.body.scrollHeight, behavior:'smooth'});
+    }catch(e){ setStatus(genStatus,`錯誤: ${e.message}`,'err'); }
+  });
+
+  function renderGallery(){
+    gallery.innerHTML='';
+    state.results.forEach((r,idx)=>{
+      const div=document.createElement('div'); div.className='tile';
+      const img=new Image(); img.src=r.src; img.alt=r.style; img.loading='lazy';
+      const meta=document.createElement('div'); meta.className='meta';
+      const left=document.createElement('div'); left.innerHTML=`<span class="chip">${r.style}</span>`;
+      const right=document.createElement('div');
+      const btnPick=document.createElement('button'); btnPick.className='btn'; btnPick.textContent='選這張'; btnPick.addEventListener('click', ()=>chooseResult(idx));
+      const btnDl=document.createElement('button'); btnDl.className='btn ghost'; btnDl.textContent='下載'; btnDl.addEventListener('click', ()=>downloadImage(r.src, `styled_${idx+1}.png`));
+      right.append(btnPick,btnDl); meta.append(left,right); div.append(img,meta); gallery.append(div);
+    });
+  }
+
+  async function chooseResult(idx){
+    state.selectedIndex = idx; furniturePanel.style.display=''; chosenWrap.innerHTML='';
+    const im=new Image(); im.src=state.results[idx].src; await im.decode();
+    const cv=document.createElement('canvas'); const cx=cv.getContext('2d'); cv.width=im.width; cv.height=im.height; cx.drawImage(im,0,0);
+    chosenWrap.append(cv); chosenStyle.textContent=state.results[idx].style;
+    window.scrollTo({top:furniturePanel.offsetTop-20, behavior:'smooth'});
+  }
+  el('btnBackToGallery').addEventListener('click', ()=>{ furniturePanel.style.display='none'; state.selectedIndex=-1; window.scrollTo({top: gallery.offsetTop-20, behavior:'smooth'}); });
+
+  el('btnApplyFurniture').addEventListener('click', async ()=>{
+    if(state.selectedIndex<0){ alert('請先選一張'); return; }
+    setStatus(el('furnStatus'),'調整中…');
+    try{
+      const cv=chosenWrap.querySelector('canvas'); const baseURL=cv.toDataURL('image/png');
+      const ops=[{kind: el('fKind').value, op: el('fOp').value, color: el('fColor').value, material: el('fMat').value}];
+      const payload={ base_image_b64: dataURLToPureB64(baseURL), ops, job_id: state.jobId || null };
+      const resp=await fetch(endpoints.furnEdit(), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload), mode:'cors'});
+      const ct=resp.headers.get('content-type')||'';
+      if(!resp.ok){ setStatus(el('furnStatus'),`HTTP ${resp.status}`,'err'); logDbg(await resp.text()); return; }
+      if(!ct.includes('application/json')){ setStatus(el('furnStatus'),'回傳非 JSON','err'); logDbg(await resp.text()); return; }
+      const data=await resp.json();
+      const src=data.image_b64? `data:image/png;base64,${data.image_b64}` : (data.url||data.src||data.imageUrl);
+      if(!src){ setStatus(el('furnStatus'),'回傳無圖片','err'); return; }
+      const im=await loadImage(src); cv.width=im.width; cv.height=im.height; const cx=cv.getContext('2d'); cx.drawImage(im,0,0);
+      setStatus(el('furnStatus'),'完成','ok');
+    }catch(e){ setStatus(el('furnStatus'),`錯誤: ${e.message}`,'err'); }
+  });
+
+  async function downloadImage(src, filename){
+    const a=document.createElement('a'); a.download=filename;
+    try{ const im=await loadImage(src); const cv=document.createElement('canvas'); const cx=cv.getContext('2d'); cv.width=im.width; cv.height=im.height; cx.drawImage(im,0,0); await drawLogoOnCanvas(cv); cv.toBlob(b=>{ a.href=URL.createObjectURL(b); a.click(); }, 'image/png'); }
+    catch{ const r=await fetch(src); const b=await r.blob(); a.href=URL.createObjectURL(b); a.click(); }
+  }
+  async function drawLogoOnCanvas(cv){
+    const file=logoInput.files?.[0]; if(!file) return;
+    const url=URL.createObjectURL(file); const logoIm=await loadImage(url); const cx=cv.getContext('2d');
+    const pos=el('logoPos').value; const alpha=(+el('logoAlpha').value)/100;
+    const w=Math.round(cv.width*0.18); const h=Math.round(logoIm.height*(w/logoIm.width)); const pad=Math.round(cv.width*0.02);
+    let x=pad, y=pad; if(pos==='tr'){x=cv.width-w-pad;y=pad;} if(pos==='bl'){x=pad;y=cv.height-h-pad;} if(pos==='br'){x=cv.width-w-pad;y=cv.height-h-pad;}
+    cx.globalAlpha=alpha; cx.drawImage(logoIm,x,y,w,h); cx.globalAlpha=1;
+  }
+  el('btnFinalDownload').addEventListener('click', async ()=>{
+    let targetSrc = (state.results?.[state.selectedIndex]?.src) || (state.results?.[0]?.src);
+    if(!targetSrc){ alert('請先生成或選取圖片'); return; }
+    await downloadImage(targetSrc, 'final_styled.png');
+  });
+
+})();</script>
+</body>
+</html>
