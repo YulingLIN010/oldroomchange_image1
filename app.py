@@ -47,12 +47,8 @@ except ModuleNotFoundError:
         )
     def make_prompt(*args, **kwargs): return build_style_prompt(*args, **kwargs)
 
-# 深度（MiDaS v2.1 Small, ONNX Runtime；可選）
-try:
-    from utils.depth_onnx import infer_depth_map, depth_to_b64
-    HAS_DEPTH = True
-except Exception:
-    HAS_DEPTH = False
+# 深度（已停用 MiDaS）
+HAS_DEPTH = False  # /analyze 不回 depth_b64；其餘功能不變
 
 # ==== 目錄設定 ====
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
