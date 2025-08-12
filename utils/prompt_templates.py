@@ -1,22 +1,20 @@
 
 # -*- coding: utf-8 -*-
 """
-prompt_templates.py — 混合版風格提示詞生成
-- 同時參考 styles_brief_table.json（精簡重點）與 styles.txt（長描述）
-- 支援中文風格/顏色 → 英文化片語（基礎），或直接用 HEX
-- 參數：
-    build_style_prompt(style_name, colors_dict, enforce_hard_rules=True, extra="")
-  colors_dict: {"main":"#112233或中文/英文", "acc1":..., "acc2":..., "acc3":...}
-- enforce_hard_rules=True：加入「嚴禁改變相機視角/結構/開口位置」等硬規則（照片上傳版要開）
+prompt_templates.py — 混合版風格提示詞生成（對齊 app.py 與前端）
+新增：
+- load_styles()：讀取 styles_brief_table.json 的 name 欄位；若沒有，從 styles.txt 解析星號開頭的風格名
+- make_prompt(style, colors)：相容字串或 dict，呼叫 build_style_prompt
+
+核心：build_style_prompt(style_name, colors:dict=None, enforce_hard_rules=True, extra="")
 """
-import json, re
+import json, re, os
 from pathlib import Path
 
 BASE_DIR = Path("/mnt/data").resolve()
 STYLES_TABLE = BASE_DIR / "styles_brief_table.json"
 STYLES_TXT   = BASE_DIR / "styles.txt"
 
-# --- 基礎詞庫（可擴充） ---
 ZH_COLOR_MAP = {
     "白": "white", "米白": "off-white", "黑": "black", "灰": "gray",
     "淺灰": "light gray", "深灰": "charcoal gray",
@@ -31,97 +29,112 @@ ZH_COLOR_MAP = {
     "橘": "orange", "陶土": "terracotta",
 }
 
-def _load_styles_table() -> dict:
+def _load_styles_table() -> list:
     if STYLES_TABLE.exists():
         try:
-            return json.loads(STYLES_TABLE.read_text(encoding="utf-8"))
+            data = json.loads(STYLES_TABLE.read_text(encoding="utf-8"))
+            # 支援直接列名或物件
+            names = []
+            for it in data:
+                if isinstance(it, str):
+                    names.append(it)
+                elif isinstance(it, dict) and it.get("name"):
+                    names.append(it["name"])
+            return names
         except Exception:
             pass
-    return {}
+    return []
 
-def _load_styles_txt() -> dict:
+def _load_styles_txt_names() -> list:
     """
-    styles.txt 建議格式：每個風格用 ==== 分隔，標頭一行風格名，以下為長描述。
-    允許自由格式；本函式以最寬鬆方式切段。
+    styles.txt 解析：取每段以「*風格名」開頭的行
     """
-    result = {}
+    names = []
     if STYLES_TXT.exists():
         txt = STYLES_TXT.read_text(encoding="utf-8", errors="ignore")
-        blocks = re.split(r"\n={2,}\n", txt)  # 以多個等號分段（若無也能兼容）
-        for block in blocks:
-            lines = [l.strip() for l in block.strip().splitlines() if l.strip()]
-            if not lines: continue
-            name = lines[0]
-            body = "\n".join(lines[1:]).strip()
+        for m in re.finditer(r"^\*([^\n\r]+)", txt, flags=re.M):
+            name = m.group(1).strip()
             if name:
-                result[name] = body
-    return result
+                names.append(name)
+    return names
 
-def _norm_style_name(name: str) -> str:
-    return (name or "").strip()
+def load_styles() -> list:
+    names = _load_styles_table()
+    # 合併 txt 風格名（避免重複）
+    txt_names = _load_styles_txt_names()
+    for n in txt_names:
+        if n not in names:
+            names.append(n)
+    # 輸出格式相容前端：[{name: "..."}]
+    return [{"name": n} for n in names]
 
 def _color_piece(c: str) -> str:
     if not c: return ""
     c = c.strip()
-    if c.startswith("#") and (len(c) in (4,7)):  # #RGB 或 #RRGGBB
+    if c.startswith("#") and (len(c) in (4,7)):
         return c
-    # 映射中文到英文
     return ZH_COLOR_MAP.get(c, c)
 
 def _colors_to_text(colors: dict) -> str:
-    # 將 main+acc1+acc2+acc3 組為短語：Primary ...; Accents ...
     if not colors: return ""
     main = _color_piece(colors.get("main",""))
-    accs = [ _color_piece(colors.get(k,"")) for k in ("acc1","acc2","acc3") ]
+    accs = [_color_piece(colors.get(k,"")) for k in ("acc1","acc2","acc3")]
     accs = [a for a in accs if a]
     parts = []
-    if main:
-        parts.append(f"Primary color: {main}")
-    if accs:
-        parts.append("Accent colors: " + ", ".join(accs))
+    if main: parts.append(f"Primary color: {main}")
+    if accs: parts.append("Accent colors: " + ", ".join(accs))
     return "; ".join(parts)
 
 def build_style_prompt(style_name: str, colors: dict=None, enforce_hard_rules: bool=True, extra: str="") -> str:
-    """
-    回傳最終提示詞（中英混合更穩定）。
-    - 來自 styles_brief_table.json 的關鍵詞會作為「風格核心」
-    - 來自 styles.txt 的長敘述會作為「細節補充」
-    - colors 轉成英文化段落；若給的是 HEX 也會保留
-    - enforce_hard_rules=True 時插入「嚴禁變動結構/視角/開口位置/比例」等規則（照片上傳版用）
-    - extra 可補充任務特定說明（如空間/構圖）
-    """
-    style_name = _norm_style_name(style_name)
+    style_name = (style_name or "").strip()
     colors_text = _colors_to_text(colors or {})
 
-    # 讀資料源
-    table = _load_styles_table()
-    longform = _load_styles_txt()
+    # 讀資料源（簡表 + 長文）
+    brief_dict = {}
+    if STYLES_TABLE.exists():
+        try:
+            # 也把整筆存下來，後面可用 core/materials 補字
+            for it in json.loads(STYLES_TABLE.read_text(encoding="utf-8")):
+                if isinstance(it, dict) and it.get("name"):
+                    brief_dict[it["name"]] = it
+        except Exception:
+            pass
 
-    brief = table.get(style_name) or table.get(style_name.replace("風","")) or ""
-    long_desc = longform.get(style_name, "")
+    longform = {}
+    if STYLES_TXT.exists():
+        txt = STYLES_TXT.read_text(encoding="utf-8", errors="ignore")
+        # 以「*風格名」切段
+        blocks = re.split(r"\n(?=\*[^\n\r]+)", txt)
+        for block in blocks:
+            block = block.strip()
+            if not block: continue
+            m = re.match(r"^\*([^\n\r]+)\s*(.*)$", block, flags=re.S)
+            if not m: continue
+            name, body = m.group(1).strip(), m.group(2).strip()
+            longform[name] = body
 
-    # 核心風格段（英文化關鍵詞＋中文補充更穩）
     style_core = []
-    if isinstance(brief, dict):
-        # 若表格給的是 dict，可彙整主要欄位
+    brief = brief_dict.get(style_name)
+    if brief:
         key_bits = []
-        for k,v in brief.items():
-            if isinstance(v, (list, tuple)):
+        for k in ("core","materials","space_feel","colors"):
+            v = brief.get(k)
+            if isinstance(v, (list,tuple)):
                 key_bits.extend([str(x) for x in v])
             elif isinstance(v, str):
                 key_bits.append(v)
         if key_bits:
             style_core.append("Style essence: " + ", ".join(key_bits))
-    elif isinstance(brief, str) and brief.strip():
-        style_core.append("Style essence: " + brief.strip())
 
+    long_desc = longform.get(style_name, "")
     if long_desc:
-        style_core.append("Style notes (zh): " + re.sub(r"\s+", " ", long_desc)[:800])
+        # 中英混寫更穩；限制長度避免提示爆長
+        clean = re.sub(r"\s+", " ", long_desc)[:900]
+        style_core.append("Style notes (zh): " + clean)
 
     if colors_text:
         style_core.append(colors_text)
 
-    # 硬規則（照片上傳版必須開）
     hard_rules = []
     if enforce_hard_rules:
         hard_rules = [
@@ -131,10 +144,6 @@ def build_style_prompt(style_name: str, colors: dict=None, enforce_hard_rules: b
             "所有新增家具需為 built-in 或合理尺寸，遵守風格一致性與真實光影。",
         ]
 
-    if extra:
-        style_core.append(extra)
-
-    # 合成最終提示詞
     segments = [
         f"室內設計風格：{style_name} / Interior style: {style_name}",
         *style_core,
@@ -142,6 +151,25 @@ def build_style_prompt(style_name: str, colors: dict=None, enforce_hard_rules: b
     ]
     if hard_rules:
         segments.append("硬規則 / Hard Constraints: " + " ".join(hard_rules))
+    if extra:
+        segments.append(extra)
 
-    final_prompt = "\n".join(segments)
-    return final_prompt
+    return "\n".join(segments)
+
+def make_prompt(style, colors):
+    """
+    相容 app 舊呼叫：colors 可為字串（'#112233' 或 '主,配1,配2,配3'）或 dict。
+    """
+    if isinstance(colors, dict):
+        colors_dict = colors
+    else:
+        s = (colors or "").strip()
+        if not s:
+            colors_dict = {}
+        elif s.startswith("#"):
+            colors_dict = {"main": s}
+        else:
+            parts = [x.strip() for x in s.replace("，", ",").split(",") if x.strip()]
+            keys = ["main","acc1","acc2","acc3"]
+            colors_dict = {k:v for k,v in zip(keys, parts)}
+    return build_style_prompt(style, colors=colors_dict, enforce_hard_rules=True)
