@@ -54,8 +54,31 @@ for d in (JOBS_DIR, UPLOAD_DIR, RESULT_DIR, MASK_DIR, STATIC_DIR, os.path.dirnam
 
 # ==== Flask & CORS ====
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
 
+def _public_base_url():
+    # honor reverse proxy headers for https + host
+    proto = request.headers.get("X-Forwarded-Proto", request.scheme)
+    host = request.headers.get("X-Forwarded-Host", request.host)
+    if host:
+        return f"{proto}://{host}".rstrip("/")
+    # fallback to url_root (e.g., http://0.0.0.0:5000/)
+    return request.url_root[:-1] if request.url_root.endswith("/") else request.url_root
+
+def _abs_url(path: str) -> str:
+    if not path: return path
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+    if not path.startswith("/"):
+        path = "/" + path
+    return _public_base_url() + path
+
+app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024  # 2MB strict limit
+CORS(app,
+     resources={r"/*": {"origins": ["https://www.atophouse.com", "*"]}},
+     supports_credentials=False,
+     expose_headers="*",
+     allow_headers=["Content-Type","Authorization"],
+     methods=["GET","POST","OPTIONS"])
 # ==== 舊任務狀態（向下相容） ====
 @dataclass
 class Task:
@@ -176,10 +199,6 @@ def l_to_alpha_png_path(mask_l: np.ndarray, ref_image_path: str, out_path: str) 
     alpha = 255 - mask_l  # 白→0、黑→255
     rgba = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     rgba.putalpha(Image.fromarray(alpha, mode="L"))
-    Image.fromarray(alpha, mode="L")  # 方便除錯時觀察
-    Image.fromarray(alpha, mode="L")
-    Image.fromarray(alpha, mode="L")
-    Image.fromarray(alpha, mode="L")
     rgba.save(out_path, "PNG")
     return out_path
 
@@ -242,10 +261,9 @@ def analyze():
 
     return jsonify({
         "jobId": job.id,
-        "masks": {"editable_surface": f"/jobs/{job.id}/masks/ui_mask.png"}
-    })
-
-# ==== API: /masks/save ====
+        "original": _abs_url(f"/jobs/{job.id}/original.jpg"),
+        "masks": {"editable_surface": _abs_url(f"/jobs/{job.id}/masks/ui_mask.png")}
+    })# ==== API: /masks/save ====
 @app.post("/masks/save")
 def save_mask():
     """
@@ -326,8 +344,7 @@ def render_batch():
             except Exception:
                 # 沒 LOGO 或失敗：直接使用原圖
                 out_png = tmp_path
-            results.append({"style": style, "url": f"/jobs/{job.id}/outputs/{os.path.basename(out_png)}"})
-            qc[style] = {"keypoint_error": ""}  # 可擴充：關鍵點比對
+            results.append({"style": style, "url": _abs_url(f"/jobs/{job.id}/outputs/{os.path.basename(out_png)}")})qc[style] = {"keypoint_error": ""}  # 可擴充：關鍵點比對
         except Exception as e:
             results.append({"style": style, "url": "", "error": str(e)})
             qc[style] = {"keypoint_error": ""}
@@ -352,56 +369,92 @@ def upload_mask():
     fname = f"user_{uuid.uuid4().hex}.png"
     fpath = os.path.join(user_dir, fname)
     request.files["mask"].save(fpath)
-    return jsonify({"maskUrl": f"/jobs/{job.id}/masks/user/{fname}"})
-
-# ==== API: /render/furniture-edit ====
+    return jsonify({"maskUrl": _abs_url(f"/jobs/{job.id}/masks/user/{fname}")})# ==== API: /render/furniture-edit ====
 @app.post("/render/furniture-edit")
 def furniture_edit():
     """
-    JSON: { jobId, baseImageId, operations:[{type:'replace'|'recolor', target:'object', mask:<url>, spec|color:...}] }
-    目前簡化：只吃第一個 operation 與 job.original 作為基底。
+    JSON: {
+      jobId: string,
+      baseImageId?: string,      # /jobs/... 或 http(s)://.../jobs/... 或 style token
+      mask: string,              # /jobs/... UI 遮罩（白=鎖、透明=可改）或灰階黑白遮罩
+      type: "replace"|"recolor",
+      spec?: string,             # replace 用
+      color?: string             # recolor 用
+    }
     """
     data = request.get_json(force=True, silent=False)
     job_id = (data.get("jobId") or "").strip()
-    ops = data.get("operations") or []
-    if not job_id or job_id not in JOBS:
-        return jsonify({"error": "invalid jobId"}), 400
-    if not ops:
-        return jsonify({"error": "operations required"}), 400
+    if not job_id:
+        return jsonify({"error": "jobId required"}), 400
+    job = JOBS.get(job_id)
+    if not job:
+        return jsonify({"error": "job not found"}), 404
 
-    job = JOBS[job_id]
-    op = ops[0]
-    mask_url = op.get("mask") or ""
-    if not mask_url.startswith("/jobs/"):
-        return jsonify({"error": "mask url must be from /jobs"}), 400
-    # 轉 URL → 路徑
-    mask_path_ui = os.path.join(BASE_DIR, mask_url.lstrip("/"))
-    # 轉為 L → 透明遮罩（OpenAI）
-    l = ui_png_to_l(mask_path_ui)
-    tmp_l = os.path.join(job.dir, "masks", f"edit_L_{uuid.uuid4().hex}.png")
-    Image.fromarray(l, mode="L").save(tmp_l, "PNG")
-    alpha_path = os.path.join(job.dir, "masks", f"edit_alpha_{uuid.uuid4().hex}.png")
-    l_to_alpha_png_path(l, job.original, alpha_path)
+    # 解析遮罩路徑
+    mask_url = data.get("mask") or ""
+    def to_local_path(p: str) -> Optional[str]:
+        if not p:
+            return None
+        if p.startswith("/"):
+            p2 = p.lstrip("/")
+            return p2 if os.path.exists(p2) else None
+        if p.startswith("http"):
+            i = p.find("/jobs/")
+            if i != -1:
+                p2 = p[i+1:]
+                return p2 if os.path.exists(p2) else None
+        return None
 
-    # 組 prompt
-    if op.get("type") == "recolor":
-        color = op.get("color", "#1E3A8A")
-        prompt = f"Recolor the selected furniture/object to {color}. Keep the camera angle, structure, windows/doors and room layout unchanged."
-    else:  # replace
-        spec = op.get("spec", "modern sofa with metal legs")
-        prompt = f"Replace the selected object with: {spec}. Keep all architecture and perspective exactly the same; only modify the masked area."
+    mask_path = to_local_path(mask_url)
+    if not mask_path:
+        return jsonify({"error": "mask not found"}), 400
 
-    out_png = os.path.join(job.dir, "outputs", f"edit_{uuid.uuid4().hex}.png")
+    # 基底圖：baseImageId > original.jpg
+    baseImageId = (data.get("baseImageId") or "").strip()
+    base_path = None
+    if baseImageId:
+        base_path = to_local_path(baseImageId)
+        if not base_path and os.path.isdir(os.path.join(job.dir, "outputs")):
+            # 當作 style token，找 outputs 內檔名含 token 的最新一張
+            outs = sorted(
+                [os.path.join(job.dir, "outputs", f) for f in os.listdir(os.path.join(job.dir, "outputs")) if baseImageId in f],
+                key=lambda p: os.path.getmtime(p),
+                reverse=True
+            )
+            if outs:
+                base_path = outs[0]
+    if not base_path:
+        base_path = job.original
+
+    # 轉為 OpenAI 用透明遮罩
+    l = ui_png_to_l(mask_path)
+    alpha_png = os.path.join(job.dir, "alpha_runtime.png")
+    l_to_alpha_png_path(l, base_path, alpha_png)
+
+    # 組提示詞
+    t = (data.get("type") or "replace").lower()
+    if t == "recolor":
+        color = data.get("color", "#1E3A8A")
+        prompt = f"Recolor the selected furniture/object to {color}. Keep camera angle, structure, windows/doors positions, and layout exactly the same. Only modify within the mask."
+    else:
+        spec = data.get("spec", "modern sofa with metal legs")
+        prompt = f"Replace the selected object with: {spec}. Keep camera angle, structure, windows/doors positions, and layout exactly the same. Only modify within the mask."
+
+    # 調 OpenAI 編輯
+    from dalle_api import edit_image_with_mask
     try:
-        img_bytes = edit_image_with_mask(job.original, alpha_path, prompt, size="1024x1024")
-        with open(out_png, "wb") as f:
-            f.write(img_bytes)
-        return jsonify({"imageUrl": f"/jobs/{job.id}/outputs/{os.path.basename(out_png)}"})
+        img_bytes = edit_image_with_mask(base_path, alpha_png, prompt, size="1024x1024")
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"OpenAI edit failed: {e}"}), 500
 
-# ==== API: /styles ====
-@app.get("/styles")
+    # 存檔
+    out_dir = os.path.join(job.dir, "outputs")
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"edit_{uuid.uuid4().hex}.png")
+    with open(out_path, "wb") as f:
+        f.write(img_bytes)
+
+    return jsonify({"imageUrl": _abs_url(f"/jobs/{job.id}/outputs/{os.path.basename(out_path)}")})@app.get("/styles")
 def styles_endpoint():
     return jsonify(load_styles())
 
@@ -502,15 +555,20 @@ def status_legacy(task_id):
         task = TASKS.get(task_id)
         if not task:
             return jsonify({"status": "failed", "error": "task not found"}), 404
+        
+        def _abs(v):
+            try:
+                return _abs_url(v) if v else v
+            except Exception:
+                return v
         return jsonify({
             "status": task.status,
             "error": task.error,
-            "original_image_url": task.original_image_url,
-            "mask_url": task.mask_url,
-            "styled_image_url": task.styled_image_url,
+            "original_image_url": _abs(task.original_image_url),
+            "mask_url": _abs(task.mask_url),
+            "styled_image_url": _abs(task.styled_image_url),
             "created_at": task.created_at,
         })
-
 # ==== 健康檢查 ====
 @app.get("/healthz")
 def healthz():

@@ -56,6 +56,7 @@
     .seg{background:#fff;color:var(--text);border:0;padding:8px 12px}
     .seg.active{background:linear-gradient(90deg,var(--brand),var(--brand-2));color:#fff}
   </style>
+<script>window.API_BASE="https://oldroomchange-image3.onrender.com";</script>
 </head>
 <body>
   <h1>舊屋換新風格（照片上傳版）<span id="status" class="badge">待上傳</span></h1>
@@ -514,5 +515,279 @@ function applyPalette(c, cardEl){ $('#cMain').value = c[0]; $('#c1').value = c[1
 function randPalette(){ const p = PALETTES[Math.floor(Math.random()*PALETTES.length)]; const card = document.querySelector(`.palcard[data-id="${p.id}"]`); applyPalette(p.c, card); }
 buildPaletteGrid(); randPalette();
 </script>
+<!-- 修補補丁：上傳即時預覽 + 分析事件重綁 -->
+<script>
+// ===== 修補：上傳立即預覽 + 重綁分析按鈕（覆蓋舊 handler） =====
+(function(){
+  const MAX_MB = 2; // strict upload limit for Strikingly
+
+  const $ = (sel)=>document.querySelector(sel);
+  const api = (p)=> (p.startsWith('http') ? p : p);
+
+  function loadImage(src) {
+    return new Promise((resolve, reject)=>{
+      const im = new Image();
+      im.crossOrigin = "anonymous";
+      im.onload = ()=>resolve(im);
+      im.onerror = ()=>reject(new Error("圖片載入失敗："+src));
+      im.src = src;
+    });
+  }
+
+  async function initCanvas(baseUrl, maskUrl/*可省*/){
+    const baseImg = await loadImage(baseUrl);
+    const maskCan = $("#maskCanvas");
+    const uiCan   = $("#uiCanvas");
+    if(!maskCan || !uiCan){ return; }
+    const w = baseImg.naturalWidth || baseImg.width;
+    const h = baseImg.naturalHeight || baseImg.height;
+    [maskCan, uiCan].forEach(c=>{ c.width=w; c.height=h; });
+
+    const uictx = uiCan.getContext("2d");
+    const mctx  = maskCan.getContext("2d");
+    uictx.clearRect(0,0,w,h);
+    uictx.drawImage(baseImg, 0,0,w,h);
+    mctx.clearRect(0,0,w,h);
+
+    if(maskUrl){
+      try{
+        const maskImg = await loadImage(api(maskUrl));
+        mctx.drawImage(maskImg,0,0,w,h);
+        uictx.drawImage(maskCan,0,0);
+      }catch(e){ console.warn("初始遮罩載入失敗", e); }
+    }
+
+    if(!maskCan._patchBound){
+      let drawing=false, size=40;
+      const getXY=(evt)=>{
+        const r=maskCan.getBoundingClientRect();
+        const cx=evt.touches?evt.touches[0].clientX:evt.clientX;
+        const cy=evt.touches?evt.touches[0].clientY:evt.clientY;
+        return {
+          x: (cx-r.left)/r.width * maskCan.width,
+          y: (cy-r.top)/r.height* maskCan.height
+        };
+      };
+      const draw=(x,y)=>{
+        mctx.globalCompositeOperation='source-over';
+        mctx.fillStyle='#ffffff'; // 白=鎖
+        mctx.beginPath(); mctx.arc(x,y,size/2,0,Math.PI*2); mctx.fill();
+        uictx.globalCompositeOperation='source-over';
+        uictx.drawImage(maskCan,0,0);
+      };
+      const down=(e)=>{ drawing=true; const {x,y}=getXY(e); draw(x,y); };
+      const move=(e)=>{ if(!drawing) return; const {x,y}=getXY(e); draw(x,y); };
+      const up=()=>{ drawing=false; };
+
+      maskCan.addEventListener('mousedown',down);
+      maskCan.addEventListener('mousemove',move);
+      window.addEventListener('mouseup',up);
+      maskCan.addEventListener('touchstart',down,{passive:true});
+      maskCan.addEventListener('touchmove',move,{passive:true});
+      window.addEventListener('touchend',up,{passive:true});
+      maskCan._patchBound=true;
+    }
+  }
+
+  // 上傳即時預覽（不等 /analyze）
+  const fileEl = $("#fileInput");
+  if(fileEl && !fileEl._patchBound){
+    fileEl.addEventListener('change', async (e)=>{
+      const f = e.target.files && e.target.files[0];
+      if(!f) return;
+      if (f.size > MAX_MB * 1024 * 1024) {
+        alert(`檔案過大，上限 ${MAX_MB} MB。請壓縮後再上傳。`);
+        e.target.value = "";
+        if(statusEl) statusEl.textContent = `已清除：超過 ${MAX_MB}MB 限制`;
+        return;
+      }
+      const url = URL.createObjectURL(f);
+      try{
+        await drawImageToCanvas(url);
+        if(statusEl) statusEl.textContent = `已載入本機預覽（尚未分析，限制 ${MAX_MB}MB）`;
+      }catch(err){
+        alert(err.message||'預覽失敗');
+        if(statusEl) statusEl.textContent = '預覽失敗';
+      }
+    });
+    fileEl._patchBound=true;
+  }
+
+  // 重綁「分析」按鈕
+  const btn = $("#btnAnalyze");
+  if(btn){
+    btn.onclick = async ()=>{
+      const f = fileEl && fileEl.files && fileEl.files[0];
+      if(!f){ alert("請先選擇一張室內照片"); return; }
+      const fd = new FormData(); fd.append("image", f); fd.append("mask","smart");
+      const statusEl = $("#status"); if(statusEl) statusEl.textContent = "分析中…";
+      try{
+        const res = await fetch(api("/analyze"), {method:"POST", body:fd});
+        const j = await res.json();
+        if(!res.ok){ throw new Error((j && j.error) || "分析失敗"); }
+        if($("#jobId")) $("#jobId").value = j.jobId || "";
+        await initCanvas(api(j.original_url), j.masks && j.masks.editable_surface ? j.masks.editable_surface : null);
+        if(statusEl) statusEl.textContent = "分析完成，可修遮罩";
+      }catch(err){
+        console.error(err);
+        alert(err.message || "分析失敗");
+        if(statusEl) statusEl.textContent = "分析失敗";
+      }
+    };
+  }
+})();
+</script>
+
+<!-- HOTFIX v2025-08-12: preview + API base + analyze binding -->
+<script>
+(function(){
+  const MAX_MB = 2; // strict upload limit for Strikingly
+
+  // 1) Backend Base URL (edit window.API_BASE to your server if not localhost)
+  const API_BASE = window.API_BASE ? String(window.API_BASE).replace(/\/$/,'')
+    : ((location.hostname==='localhost'||location.hostname==='127.0.0.1')
+      ? 'http://localhost:5005'
+      : 'https://your-backend.example.com'); // TODO: set to your real backend
+
+  // Always use this api() (overrides any earlier version)
+  window.api = (p)=> {
+    if(!p) return API_BASE;
+    if(/^https?:\/\//i.test(p)) return p;
+    return API_BASE + (p.startsWith('/')? p : '/' + p);
+  };
+
+  // 2) Safe styles fetch (won't crash if backend unavailable)
+  try {
+    fetch(api('/styles'))
+      .then(r=>r.ok?r.json():Promise.reject())
+      .then(list=>{
+        const sel=document.querySelector('#styleSelect');
+        if(!sel||!Array.isArray(list)) return;
+        if(sel.options.length===0){
+          list.forEach(it=>{
+            const o=document.createElement('option');
+            o.value=it.name||it; o.textContent=(it.name||it);
+            sel.appendChild(o);
+          });
+        }
+      }).catch(()=>{});
+  }catch(_){}
+
+  // 3) Robust local preview (draw on the base canvas directly)
+  const fileEl = document.querySelector('#fileInput');
+  const maskCan = document.querySelector('#maskCanvas');
+  const uiCan = document.querySelector('#uiCanvas');
+  const statusEl = document.querySelector('#status');
+
+  function drawImageToCanvas(url){
+    return new Promise((resolve,reject)=>{
+      const im = new Image();
+      im.onload = ()=>{
+        const w = im.naturalWidth||im.width, h = im.naturalHeight||im.height;
+        [maskCan, uiCan].forEach(c=>{ c.width=w; c.height=h; });
+        const mctx = maskCan.getContext('2d');
+        const uictx = uiCan.getContext('2d');
+        mctx.clearRect(0,0,w,h);
+        uictx.clearRect(0,0,w,h);
+        // 直接畫在底層，保證一定能看見預覽
+        mctx.drawImage(im, 0,0,w,h);
+        resolve();
+      };
+      im.onerror = ()=>reject(new Error('預覽失敗，無法讀取圖片'));
+      im.src = url;
+    });
+  }
+
+  if(fileEl){
+    fileEl.addEventListener('change', async (e)=>{
+      const f = e.target.files && e.target.files[0];
+      if(!f) return;
+      if (f.size > MAX_MB * 1024 * 1024) {
+        alert(`檔案過大，上限 ${MAX_MB} MB。請壓縮後再上傳。`);
+        e.target.value = "";
+        if(statusEl) statusEl.textContent = `已清除：超過 ${MAX_MB}MB 限制`;
+        return;
+      }
+      const url = URL.createObjectURL(f);
+      try{
+        await drawImageToCanvas(url);
+        if(statusEl) statusEl.textContent = `已載入本機預覽（尚未分析，限制 ${MAX_MB}MB）`;
+      }catch(err){
+        alert(err.message||'預覽失敗');
+        if(statusEl) statusEl.textContent = '預覽失敗';
+      }
+    });
+  }
+
+  // 4) Rebind Analyze button (always alerts on failure instead of silent)
+  const btnAnalyze = document.querySelector('#btnAnalyze');
+  if(btnAnalyze){
+    btnAnalyze.onclick = async ()=>{
+      const f = fileEl && fileEl.files && fileEl.files[0];
+      if(!f){ alert('請先選擇一張室內照片'); return; }
+      if (f.size > MAX_MB * 1024 * 1024) {
+        alert(`檔案過大，上限 ${MAX_MB} MB。請壓縮後再上傳。`);
+        return;
+      }
+      const fd = new FormData();
+      fd.append('image', f);
+      fd.append('mask','smart');
+
+      if(statusEl) statusEl.textContent = '分析中…';
+      try{
+        const res = await fetch(api('/analyze'), { method:'POST', body: fd });
+        const j = await res.json();
+        if(!res.ok){ throw new Error((j && (j.error||j.message)) || '分析失敗'); }
+        window.g = window.g || {};
+        window.g.jobId = j.jobId;
+        const jobId = j.jobId;
+        const jobIdInput = document.querySelector('#jobId');
+        if(jobIdInput) jobIdInput.value = jobId || '';
+        const baseUrl = j.original || api(`/jobs/${jobId}/original.jpg`);
+        await drawImageToCanvas(baseUrl);
+        if(j.masks && j.masks.editable_surface){
+          const mImg = new Image();
+          mImg.crossOrigin = 'anonymous';
+          mImg.onload = ()=>{
+            const ctx = maskCan.getContext('2d');
+            ctx.drawImage(mImg, 0,0, maskCan.width, maskCan.height);
+          };
+          mImg.src = j.masks.editable_surface;
+        }
+        if(statusEl) statusEl.textContent = '分析完成，可修遮罩';
+      }catch(err){
+        console.error(err);
+        alert(err.message || '分析失敗');
+        if(statusEl) statusEl.textContent = '分析失敗';
+      }
+    };
+        window.g.jobId = j.jobId;
+        const jobId = j.jobId;
+        const jobIdInput = document.querySelector('#jobId');
+        if(jobIdInput) jobIdInput.value = jobId || '';
+        // 顯示後端保存的原圖（穩定路徑）
+        const baseUrl = api(`/jobs/${jobId}/original.jpg`);
+        await drawImageToCanvas(baseUrl);
+        // 如果有建議遮罩就套上去（畫在上層）
+        if(j.masks && j.masks.editable_surface){
+          const mImg = new Image();
+          mImg.crossOrigin = 'anonymous';
+          mImg.onload = ()=>{
+            const ctx = maskCan.getContext('2d');
+            ctx.drawImage(mImg, 0,0, maskCan.width, maskCan.height);
+          };
+          mImg.src = api(j.masks.editable_surface);
+        }
+        if(statusEl) statusEl.textContent = '分析完成，可修遮罩';
+      }catch(err){
+        console.error(err);
+        alert(err.message || '分析失敗');
+        if(statusEl) statusEl.textContent = '分析失敗';
+      }
+    };
+  }
+})();
+</script>
+
 </body>
 </html>
