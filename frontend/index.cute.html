@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>舊屋換新風格 · 可愛對齊版</title>
+<title>舊屋換新風格 · 完整版（綠=鎖定・擦=可改）</title>
 <!--
 說明：
 此單檔前端提供 1~7 步驟流程：上傳→偵測→手繪修正→選風格+色卡→生成→四格比對→家具編修。
@@ -49,6 +49,8 @@ hr.c{border:none; height:1px; background:linear-gradient(90deg,#0000,#0002,#0000
 </style>
 
 <script>
+const FALLBACK_STYLES = [{"code": "北歐風", "name": "北歐風", "brief": "簡約線條、自然採光、功能導向"}, {"code": "現代風", "name": "現代風", "brief": "幾何分明、極簡收納、玻璃金屬感"}, {"code": "工業風", "name": "工業風", "brief": "外露結構、粗獷材質、深色調"}, {"code": "美式鄉村風", "name": "美式鄉村風", "brief": "溫馨木作、經典線板、復古細節"}, {"code": "日式侘寂風", "name": "日式侘寂風", "brief": "留白、自然材質、不對稱美"}, {"code": "日式禪風", "name": "日式禪風", "brief": "對稱、自然光、簡淨材質"}, {"code": "地中海風", "name": "地中海風", "brief": "拱門、白牆、藍白對比"}, {"code": "輕奢古典風", "name": "輕奢古典風", "brief": "線板造型、金屬點綴、高雅材質"}, {"code": "混搭風", "name": "混搭風", "brief": "多種風格融合、創意布局"}, {"code": "鄉村風", "name": "鄉村風", "brief": "粗獷木質、溫暖色調"}, {"code": "極簡風", "name": "極簡風", "brief": "空間留白、極簡家具"}, {"code": "現代奢華風", "name": "現代奢華風", "brief": "高級材質、大膽色彩"}, {"code": "藝術復古風", "name": "藝術復古風", "brief": "藝術感強烈、古典家具"}];
+
 // 後端 API 入口：可用 window.API_BASE 覆寫，預設為 Render 網址
 const BASE_URL = (window.API_BASE||'https://oldroomchange-image3.onrender.com');
 /* 把後端回傳的相對路徑（/files/...）轉為絕對網址，避免在 Strikingly 網域下無法顯示 */
@@ -89,7 +91,7 @@ const state = {
       <span id="detectBadge" class="badge">待偵測</span>
     </div>
     <hr class="c">
-    <div class="help">完成後會出現 <b>合併遮罩</b> 與「鎖定結構（綠）」圖層預覽，下一步進入「手繪修正」。</div>
+    <div class="help">完成後會出現 <b>合併遮罩</b> 與「鎖定結構（綠＝不可更改）」圖層預覽，下一步進入「手繪修正」。</div>
     <img id="merged" class="preview hidden" alt="合併遮罩預覽">
   </div>
 
@@ -189,9 +191,10 @@ function toBlob(c){ return new Promise(r=>c.toBlob(r,'image/png')); }
 (async function loadMeta(){
   try{
     const r=await fetch(BASE_URL+'/meta/styles'); const d=await r.json();
-    state.styles = d.styles||[]; state.kbVersion = d.kb_version||'kb';
+    state.styles = (Array.isArray(d.styles) && d.styles.length? d.styles : FALLBACK_STYLES);
+    state.kbVersion = d.kb_version||'kb';
   }catch{
-    state.styles = [{code:'現代風',name:'現代風',brief:'線條簡潔、材質純淨'}];
+    state.styles = FALLBACK_STYLES;
     state.kbVersion = 'kb-local';
   }
   renderStyleList();
@@ -253,6 +256,7 @@ async function initEditCanvas(){
   const ctx = cv.getContext('2d'); ctx.drawImage(base,0,0,cv.width,cv.height);
   // 建立 lockLayer：白=鎖定（不可變動），黑=可編輯
   state.lockLayer = document.createElement('canvas'); state.lockLayer.width=cv.width; state.lockLayer.height=cv.height;
+  const _lctx = state.lockLayer.getContext('2d'); _lctx.clearRect(0,0,state.lockLayer.width,state.lockLayer.height);
 }
 async function initFurnitureCanvas(){
   const base = await loadImage(state.image.previewURL);
@@ -272,13 +276,25 @@ $('#btnDetect').addEventListener('click', async ()=>{
     if(!r.ok){ r = await fetch(BASE_URL+'/detect',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({image_id:state.image.id})}); }
     const d = await r.json();
     state.maskVersion = d.mask_version;
-    $('#detectBadge').textContent='完成 ✔';
+    $('#detectBadge').textContent='完成 ✔' + (d.detector?`（${d.detector==='vision'?'Vision':'${d.detector}'}）`:'' );
     // 合併遮罩（含綠色鎖定區高亮）
     $('#merged').src = ABS(d.merged_overlay); $('#merged').classList.remove('hidden');
     // 把鎖定遮罩（白=鎖定）讀入 lockLayer 供後續畫/擦
     const lockImg = await loadImage(ABS(d.lock_mask));
     const lctx = state.lockLayer.getContext('2d'); lctx.clearRect(0,0,state.lockLayer.width,state.lockLayer.height); lctx.drawImage(lockImg,0,0,state.lockLayer.width,state.lockLayer.height);
-    // 更新視覺覆疊
+    
+// 轉換黑白遮罩→白/透明：白=鎖定、透明=可更改
+(function(){
+  const w=state.lockLayer.width,h=state.lockLayer.height;
+  const img=lctx.getImageData(0,0,w,h); const dt=img.data;
+  for(let i=0;i<dt.length;i+=4){
+    const v=(dt[i]+dt[i+1]+dt[i+2])/3;
+    const locked = v>127;
+    dt[i]=255; dt[i+1]=255; dt[i+2]=255; dt[i+3]= locked?255:0;
+  }
+  lctx.putImageData(img,0,0);
+})();
+// 更新視覺覆疊
     redrawEditCanvas();
   }catch(err){ alert('偵測失敗'); $('#detectBadge').textContent='失敗'; }
 });
@@ -301,8 +317,15 @@ function drawLine(a,b){
   const c = state.lockLayer; const cx=c.getContext('2d');
   cx.lineCap='round'; cx.lineJoin='round';
   cx.lineWidth = +$('#brush').value;
-  cx.strokeStyle = (drawMode==='draw') ? 'white' : 'black'; // 白=鎖定、黑=解除鎖定
+  if(drawMode==='draw'){
+    cx.globalCompositeOperation='source-over';
+    cx.strokeStyle='white'; // 實際資料：白=鎖定（不可更改）
+  }else{
+    cx.globalCompositeOperation='destination-out';
+    cx.strokeStyle='rgba(0,0,0,1)'; // 擦成透明＝可更改
+  }
   cx.beginPath(); cx.moveTo(a.x,a.y); cx.lineTo(b.x,b.y); cx.stroke();
+  cx.globalCompositeOperation='source-over';
   redrawEditCanvas();
 }
 function redrawEditCanvas(){

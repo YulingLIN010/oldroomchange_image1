@@ -195,15 +195,42 @@ def metrics():
 @APP.get("/meta/styles")
 @_measure
 def meta_styles():
+    """
+    Return style list.
+    Priority:
+      1) styles_brief_table.json (same dir as app)
+      2) styles.txt (line starts with *StyleName)
+      3) fallback presets
+    """
+    table = ROOT / "styles_brief_table.json"
+    txt = ROOT / "styles.txt"
+    styles = []
+    kb_version = int(time.time())
     try:
-        styles = PT.load_styles()
-        names = [{"code": s["name"], "name": s["name"]} for s in styles]
-    except Exception:
-        names = [{"code":"現代風","name":"現代風"}]
-    kb_v = int(os.path.getmtime((ROOT/"styles_brief_table.json"))) if (ROOT/"styles_brief_table.json").exists() else int(time.time())
-    return _ok(styles=names, kb_version=kb_v)
-
-@APP.post("/upload")
+        if table.exists():
+            data = json.loads(table.read_text("utf-8"))
+            for it in data:
+                name = (it.get("name") or "").strip()
+                brief = (it.get("core") or "").strip()
+                if name:
+                    styles.append({"code": name, "name": name, "brief": brief})
+            kb_version = int(table.stat().st_mtime)
+        elif txt.exists():
+            import re as _re
+            raw = txt.read_text("utf-8", errors="ignore")
+            names = _re.findall(r'^\*(\S+)', raw, flags=_re.M)
+            for nm in names:
+                styles.append({"code": nm, "name": nm})
+            kb_version = int(txt.stat().st_mtime)
+        else:
+            styles = [
+                {"code": "北歐風", "name": "北歐風", "brief": "簡約、木質、自然光"},
+                {"code": "輕奢古典風", "name": "輕奢古典風", "brief": "線板＋金屬點綴"},
+                {"code": "現代風", "name": "現代風", "brief": "俐落線條、功能導向"},
+            ]
+    except Exception as e:
+        return _bad(f"讀取 styles 失敗：{e}")
+    return _ok(styles=styles, kb_version=kb_version)@APP.post("/upload")
 @require_quota
 @_measure
 def upload():
@@ -249,6 +276,7 @@ def delete_image(image_id):
 @require_quota
 @_measure
 def detect():
+    detector_name = 'opencv' if cv2 is not None else 'naive'
     if not _auth_required() and REQUIRE_JWT:
         return _bad("Unauthorized", 401)
     data = request.get_json(silent=True) or {}
@@ -301,7 +329,7 @@ def detect():
     merged_path = d/"masks"/f"merged_v{ver}.png"
     merged.save(merged_path,"PNG")
 
-    return _ok(mask_version=ver,
+    return _ok(detector=detector_name, detector_detail=('cv2' if detector_name=='opencv' else 'pil'), mask_version=ver,
                lock_mask=_serve_path(img_id, f"masks/lock_v{ver}.png"),
                editable_mask=_serve_path(img_id, f"masks/editable_v{ver}.png"),
                merged_overlay=_serve_path(img_id, f"masks/merged_v{ver}.png"),
@@ -547,7 +575,7 @@ def furniture():
 @_measure
 def download():
     """
-    下載結果：?image_id=...&result_id=...&fmt=webp|jpg|png&size=standard|hires&logo=1|0
+    下載結果：?image_id=&result_id=&fmt=webp|jpg|png&size=standard|hires&logo=1|0
     - 重新壓縮，移除 EXIF
     """
     img_id = request.args.get("image_id")
@@ -673,6 +701,7 @@ def detect_v2():
     merged = Image.alpha_composite(base, green)
     merged.save(d/"masks"/f"merged_v{ver}.png","PNG")
     return _ok(
+        detector='vision', detector_detail=os.getenv('VISION_MODEL_NAME','gpt-4o-mini'),
         mask_version=ver,
         lock_mask=_serve_path(img_id, rel(out["lock_mask"])),
         editable_mask=_serve_path(img_id, rel(out["editable_mask"])),
