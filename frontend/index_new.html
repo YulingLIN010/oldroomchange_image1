@@ -353,7 +353,14 @@ $('#btnCommitMask').onclick=async()=>{
   $('#maskBadge').textContent='提交中…';
   const fd=new FormData(); fd.append('image_id', state.image.id); 
   // 只提交 lock_mask（不可變動結構），後端會自動反推出 editable
-  const blob = await toBlob(state.lockLayer); fd.append('lock_mask', blob, 'lock.png');
+  // 將白/透明 → 黑白（白=鎖定、黑=可改），去除 alpha，避免不同瀏覽器處理差異
+  const _mask = document.createElement('canvas'); _mask.width=state.lockLayer.width; _mask.height=state.lockLayer.height;
+  const _mx = _mask.getContext('2d'); _mx.drawImage(state.lockLayer,0,0);
+  const _im = _mx.getImageData(0,0,_mask.width,_mask.height); const _dt=_im.data;
+  for(let i=0;i<_dt.length;i+=4){ const a=_dt[i+3]; const v = a>32 ? 255 : 0; _dt[i]=v; _dt[i+1]=v; _dt[i+2]=v; _dt[i+3]=255; }
+  _mx.putImageData(_im,0,0);
+  const blob = await new Promise(res=>_mask.toBlob(res,'image/png'));
+  fd.append('lock_mask', blob, 'lock.png');
   try{
     const r=await fetch(BASE_URL+'/mask/commit',{method:'POST', body:fd});
     const d=await r.json(); state.maskVersion=d.mask_version; $('#maskBadge').textContent='已提交 v'+d.mask_version+' ✔';
