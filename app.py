@@ -4,7 +4,6 @@ import os, io, uuid, json, base64, time, math, re, functools, threading
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
 from flask import Flask, request, jsonify, send_file, make_response, g
 from flask_cors import CORS
@@ -89,8 +88,10 @@ def observe(path, method, code, seconds):
     _metrics["request_seconds_count"][k] = _metrics["request_seconds_count"].get(k, 0) + 1
 
 
-# ---- CORS: 允許前端以 canvas 合成下載（需能 fetch blob） ----
-def add_cors_headers(resp):
+
+# ---- CORS: 允許前端以 canvas 合成下載（fetch blob） ----
+@APP.after_request
+def _after(resp):
     try:
         resp.headers['Access-Control-Allow-Origin'] = '*'
         resp.headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
@@ -99,10 +100,6 @@ def add_cors_headers(resp):
     except Exception:
         pass
     return resp
-
-@APP.after_request
-def _after(resp):
-    return add_cors_headers(resp)
 
 @APP.after_request
 def add_csp_headers(resp):
@@ -412,9 +409,6 @@ def compare_grid():
 @require_quota
 @_measure
 def generate():
-    GEN_TIMEOUT = int(os.getenv('GEN_TIMEOUT', '180'))
-    GEN_PER_ITEM_TIMEOUT = int(os.getenv('GEN_PER_ITEM_TIMEOUT', '90'))
-    _t0 = time.time()
     if not _auth_required() and REQUIRE_JWT:
         return _bad("Unauthorized", 401)
     data = request.get_json(silent=True) or {}
@@ -453,22 +447,7 @@ def generate():
             "acc2": (palette.get("accents") or [None,None,None])[1] if len(palette.get("accents",[]))>1 else None,
             "acc3": (palette.get("accents") or [None,None,None])[2] if len(palette.get("accents",[]))>2 else None,
         })
-        
-# 逐張生成設置逾時，避免單張卡死
-_executor = ThreadPoolExecutor(max_workers=1)
-try:
-    _f = _executor.submit(edit_image_with_mask, str(raw)
-    out_bytes = _f.result(timeout=GEN_PER_ITEM_TIMEOUT)
-except FuturesTimeout:
-    return _bad('generate item timeout', 504)
-except Exception as e:
-    return _bad(f'generate item failed: {e}', 502)
-finally:
-    try:
-        _executor.shutdown(cancel_futures=True)
-    except Exception:
-        pass
-, mask_buf, prompt, size="1024x1024", model=model)
+        out_bytes = edit_image_with_mask(str(raw), mask_buf, prompt, size="1024x1024", model=model)
         ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
         rid = uuid.uuid4().hex[:10]
         out_path = d/"results"/f"{rid}_{s}_{ts}.png"
@@ -637,7 +616,7 @@ try:
 except Exception:
     _detect_structures = None
     HAS_VISION = False
-DETECT_V2_TIMEOUT = int(os.getenv('DETECT_V2_TIMEOUT', '90'))
+
 
 @APP.post("/detect/v2")
 @require_quota
@@ -650,29 +629,34 @@ def detect_v2():
     """
     if not _auth_required() and REQUIRE_JWT:
         return _bad("Unauthorized", 401)
-            # 若未安裝 vision_detect，回 501，前端會自動回退到 /detect
-        if not HAS_VISION or _detect_structures is None:
-            return _bad("detect_v2 not available", 501)
-    data = request.get_json(silent=True) or {
+    # 若未安裝 vision_detect，回 501，前端會自動回退到 /detect
+    if not HAS_VISION or _detect_structures is None:
+        return _bad("detect_v2 not available", 501)
 
+    data = request.get_json(silent=True) or {}
     img_id = data.get("image_id")
-    if not img_id: return _bad("缺少 image_id")
+    if not img_id:
+        return _bad("缺少 image_id")
     d = _image_dir(img_id)
     raw = d/"original.png"
-    if not raw.exists(): return _bad("原始圖不存在",404)
+    if not raw.exists():
+        return _bad("原始圖不存在",404)
 
-    # versioning for v2 as well
+    # 版本管理
+    (d/"masks").mkdir(exist_ok=True)
     vfile = d/"masks"/"version.txt"
     ver = int(vfile.read_text())+1 if vfile.exists() else 1
     vfile.write_text(str(ver))
 
-    
-# 以 thread 執行並設定逾時，避免卡死
-executor = ThreadPoolExecutor(max_workers=1)
-try:
-    fut = executor.submit(_detect_structures,str(raw), str(d/"masks"), version=ver, model=os.getenv("VISION_MODEL_NAME","gpt-4o-mini"))
+    # 直接呼叫 GPT Vision 偵測（此版不加執行緒逾時，保守穩定）
+    out = _detect_structures(str(raw), str(d/"masks"), ver, os.getenv("VISION_MODEL_NAME","gpt-4o-mini"))
+
     # Convert local paths to served URLs
-    def rel(p): return str(Path(p).relative_to(d))
+    def rel(p): 
+        try:
+            return str(Path(p).relative_to(d))
+        except Exception:
+            return str(p)
     return _ok(
         mask_version=ver,
         lock_mask=_serve_path(img_id, rel(out["lock_mask"])),
@@ -680,5 +664,5 @@ try:
         merged_overlay=_serve_path(img_id, rel(out["merged_overlay"])),
         depth_map=_serve_path(img_id, rel(out["depth_map"])),
         layers_json=_serve_path(img_id, rel(out["layers_json"])),
-        layers_count=out["layers_count"]
+        layers_count=out.get("layers_count")
     )
