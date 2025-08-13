@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>舊屋換新風格 · 可愛對齊版</title>
+<title>舊屋換新風格 · 完整版（綠=鎖定・擦=可改）</title>
 <!--
 說明：
 此單檔前端提供 1~7 步驟流程：上傳→偵測→手繪修正→選風格+色卡→生成→四格比對→家具編修。
@@ -89,7 +89,7 @@ const state = {
       <span id="detectBadge" class="badge">待偵測</span>
     </div>
     <hr class="c">
-    <div class="help">完成後會出現 <b>合併遮罩</b> 與「鎖定結構（綠）」圖層預覽，下一步進入「手繪修正」。</div>
+    <div class="help">完成後會出現 <b>合併遮罩</b> 與「鎖定結構（綠＝不可更改）」圖層預覽，下一步進入「手繪修正」。</div>
     <img id="merged" class="preview hidden" alt="合併遮罩預覽">
   </div>
 
@@ -139,6 +139,10 @@ const state = {
     <div class="c-title"><span class="b">⑥</span> 四格比對牆（原圖＋最多 3 張變體）</div>
     <div id="compare" class="grid-3" style="margin-top:10px"></div>
     <div class="help">每一格右上角 ⬇︎ 可直接下載（皆含壹宅 LOGO）。</div>
+<div class="toolbar" style="margin-top:8px">
+  <button id="btnGrid" class="btn">🧩 下載 2×2 合併圖</button>
+  <span class="help">將「原圖＋最多 3 張變體」合併成單張 PNG</span>
+</div>
   </div>
 
   <!-- ⑦ 家具編修：先在 ⑤ 選定一張變體作為底圖；以矩形框選產生 mask_data_url；呼叫 /furniture 新增/更換/改色，產出含 LOGO 的結果 -->
@@ -249,6 +253,7 @@ async function initEditCanvas(){
   const ctx = cv.getContext('2d'); ctx.drawImage(base,0,0,cv.width,cv.height);
   // 建立 lockLayer：白=鎖定（不可變動），黑=可編輯
   state.lockLayer = document.createElement('canvas'); state.lockLayer.width=cv.width; state.lockLayer.height=cv.height;
+  const _lctx = state.lockLayer.getContext('2d'); _lctx.clearRect(0,0,state.lockLayer.width,state.lockLayer.height);
 }
 async function initFurnitureCanvas(){
   const base = await loadImage(state.image.previewURL);
@@ -274,7 +279,19 @@ $('#btnDetect').addEventListener('click', async ()=>{
     // 把鎖定遮罩（白=鎖定）讀入 lockLayer 供後續畫/擦
     const lockImg = await loadImage(ABS(d.lock_mask));
     const lctx = state.lockLayer.getContext('2d'); lctx.clearRect(0,0,state.lockLayer.width,state.lockLayer.height); lctx.drawImage(lockImg,0,0,state.lockLayer.width,state.lockLayer.height);
-    // 更新視覺覆疊
+    
+// 轉換黑白遮罩→白/透明：白=鎖定、透明=可更改
+(function(){
+  const w=state.lockLayer.width,h=state.lockLayer.height;
+  const img=lctx.getImageData(0,0,w,h); const dt=img.data;
+  for(let i=0;i<dt.length;i+=4){
+    const v=(dt[i]+dt[i+1]+dt[i+2])/3;
+    const locked = v>127;
+    dt[i]=255; dt[i+1]=255; dt[i+2]=255; dt[i+3]= locked?255:0;
+  }
+  lctx.putImageData(img,0,0);
+})();
+// 更新視覺覆疊
     redrawEditCanvas();
   }catch(err){ alert('偵測失敗'); $('#detectBadge').textContent='失敗'; }
 });
@@ -297,8 +314,15 @@ function drawLine(a,b){
   const c = state.lockLayer; const cx=c.getContext('2d');
   cx.lineCap='round'; cx.lineJoin='round';
   cx.lineWidth = +$('#brush').value;
-  cx.strokeStyle = (drawMode==='draw') ? 'white' : 'black'; // 白=鎖定、黑=解除鎖定
+  if(drawMode==='draw'){
+    cx.globalCompositeOperation='source-over';
+    cx.strokeStyle='white'; // 實際資料：白=鎖定（不可更改）
+  }else{
+    cx.globalCompositeOperation='destination-out';
+    cx.strokeStyle='rgba(0,0,0,1)'; // 擦成透明＝可更改
+  }
   cx.beginPath(); cx.moveTo(a.x,a.y); cx.lineTo(b.x,b.y); cx.stroke();
+  cx.globalCompositeOperation='source-over';
   redrawEditCanvas();
 }
 function redrawEditCanvas(){
@@ -441,6 +465,70 @@ $('#btnFurniture').onclick=async()=>{
     alert('家具編修完成！已自動覆蓋壹宅 LOGO，可直接下載。');
   }catch(err){ alert('家具操作失敗：'+err.message); }
 };
+
+/* ===== 6b) 下載 2×2 合併圖（前端合成，無需後端改動） ===== */
+$('#btnGrid')?.addEventListener('click', async ()=>{
+  if(!state.image){ alert('請先上傳圖片'); return; }
+  const varIds = (state.variants||[]).slice(0,3).map(v=>v.result_id).join(',');
+  let data;
+  try{
+    const r=await fetch(`${BASE_URL}/compare?base=${state.image.id}&vars=${varIds}&logo=1`);
+    data = await r.json();
+  }catch(e){ alert('讀取比對清單失敗'); return; }
+  const urls = (data.items||[]).map(it=>ABS(it.url)).slice(0,4);
+  if(urls.length===0){ alert('沒有可合併的項目'); return; }
+
+  // 以 fetch(blob) + createImageBitmap 方式載圖，避免 crossOrigin 造成 canvas 污染
+  async function loadBmp(u){
+    const r = await fetch(u, {credentials:'omit'});
+    if(!r.ok) throw new Error('讀圖失敗');
+    const b = await r.blob();
+    return await createImageBitmap(b);
+  }
+  let bmps=[];
+  try{
+    bmps = await Promise.all(urls.map(loadBmp));
+  }catch(e){
+    alert('載入圖片失敗，可能是後端未開啟 CORS。請於後端 /files 啟用 Access-Control-Allow-Origin:*');
+    return;
+  }
+  // 設定每格尺寸：以第一張為基準（假設管線產物大小一致），並設置邊距與間距
+  const pad = 16, gap = 16;
+  const tileW = bmps[0].width, tileH = bmps[0].height;
+  const W = pad*2 + tileW*2 + gap;
+  const H = pad*2 + tileH*2 + gap;
+
+  const cv = document.createElement('canvas'); cv.width=W; cv.height=H;
+  const cx = cv.getContext('2d');
+  cx.fillStyle = '#fff'; cx.fillRect(0,0,W,H);
+
+  function drawAt(i, bx, by){
+    const bmp = bmps[i];
+    // 等比置中填滿框（保持構圖比例，避免扭曲）
+    const rw = tileW / bmp.width, rh = tileH / bmp.height;
+    const s = Math.min(rw, rh);
+    const w = Math.round(bmp.width * s), h = Math.round(bmp.height * s);
+    const x = bx + Math.round((tileW - w)/2), y = by + Math.round((tileH - h)/2);
+    cx.drawImage(bmp, x, y, w, h);
+  }
+
+  // 位置：
+  // 0:(L1) 原圖，1:(R1) 變體1，2:(L2) 變體2，3:(R2) 變體3
+  drawAt(0, pad, pad);
+  if(bmps[1]) drawAt(1, pad + tileW + gap, pad);
+  if(bmps[2]) drawAt(2, pad, pad + tileH + gap);
+  if(bmps[3]) drawAt(3, pad + tileW + gap, pad + tileH + gap);
+
+  // 下載
+  cv.toBlob(blob=>{
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `compare_grid_${Date.now()}.png`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }, 'image/png');
+});
+
 </script>
 </body>
 </html>
