@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8">
-  <title>OldRoom ⟷ NewStyle – v1.7L 測試頁</title>
+  <title>OldRoom ⟷ NewStyle – 無深度測試頁（S 層）</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Noto Sans, Arial; margin: 20px; line-height: 1.5; }
@@ -26,9 +26,8 @@
   </style>
 </head>
 <body>
-  <h1>OldRoom ⟷ NewStyle – v1.7L 測試頁</h1>
-  <p class="out">這個測試頁完全依照目前後端 <code>/analyze</code> → <code>/masks/save</code> → <code>/render/batch</code> → <code>/render/furniture-edit</code> 的參數命名與回傳格式設計。<br>
-  如需 Logo 疊圖，請在伺服器放置 <code>static/logo/LOGO.png</code>，或用下方的「前端下載用疊圖」臨時處理。</p>
+  <h1>OldRoom ⟷ NewStyle – 無深度測試頁（S 層）</h1>
+  <p class="out">本頁對齊後端 app.py（MiDaS 已關閉，不回 depth）。流程：/analyze → /masks/save → /render/batch → /render/furniture-edit。</p>
 
   <fieldset>
     <legend>0) API Base</legend>
@@ -38,7 +37,7 @@
   </fieldset>
 
   <fieldset>
-    <legend>1) 上傳原圖 & 自動分析（S 層 + D 層）</legend>
+    <legend>1) 上傳原圖 & 自動分析（S 層）</legend>
     <div class="row">
       <div class="col">
         <input type="file" id="fileInput" accept="image/*">
@@ -49,15 +48,13 @@
       <div class="col">
         <div>初始 UI 遮罩（白=鎖定、透明=可改）：</div>
         <div id="maskPreview"></div>
-        <div>深度（0~1 L8 預覽）：</div>
-        <div id="depthPreview"></div>
       </div>
     </div>
   </fieldset>
 
   <fieldset>
-    <legend>2) 手動修正（合併後的最終遮罩）</legend>
-    <p>為了簡化流程，這邊直接以「上一步得到的初始 L 遮罩」當作最終遮罩送回去（白=可編輯、黑=保護）。正式整合時請接上你的手繪修正介面再呼叫 <code>/masks/save</code>。</p>
+    <legend>2) 儲存最終遮罩（將 L 遮罩轉 UI PNG 上傳）</legend>
+    <p>後端語意：<b>L 遮罩白=可編輯、黑=保護</b>；UI PNG（白=鎖、透明=可改）。</p>
     <button id="btnSaveMask" disabled>送出 /masks/save</button>
     <div id="saveInfo" class="small mono"></div>
   </fieldset>
@@ -153,7 +150,6 @@
     upInfo: document.getElementById('upInfo'),
     preview: document.getElementById('preview'),
     maskPreview: document.getElementById('maskPreview'),
-    depthPreview: document.getElementById('depthPreview'),
 
     btnSaveMask: document.getElementById('btnSaveMask'),
     saveInfo: document.getElementById('saveInfo'),
@@ -187,23 +183,12 @@
     jobId: null,
     originalUrl: null,
     combinedMaskB64: null,
-    lastImageUrl: null, // for download
-    maskUrlUploaded: null,
+    lastImageUrl: null,
   };
 
   function $(sel){ return document.querySelector(sel); }
-  function el(tag, attrs={}, children=[]) {
-    const e = document.createElement(tag);
-    for (const k in attrs) {
-      if (k === 'text') e.textContent = attrs[k];
-      else if (k === 'html') e.innerHTML = attrs[k];
-      else e.setAttribute(k, attrs[k]);
-    }
-    (Array.isArray(children)?children:[children]).forEach(ch => ch && e.appendChild(ch));
-    return e;
-  }
-  function imgFromB64(b64){ const i = new Image(); i.src = 'data:image/png;base64,' + b64; i.className='thumb'; return i; }
   function img(url){ const i = new Image(); i.src = url; i.className='thumb'; return i; }
+  function imgFromB64(b64){ const i = new Image(); i.src = 'data:image/png;base64,' + b64; i.className='thumb'; return i; }
 
   // health
   S.btnH.addEventListener('click', async ()=>{
@@ -234,11 +219,8 @@
       state.combinedMaskB64 = data.combined_mask_b64;
       S.preview.innerHTML = '';
       S.preview.appendChild(img(state.originalUrl));
-      S.maskPreview.innerHTML = data.masks?.editable_surface
-        ? '' : '(server 未回 ui_mask)';
+      S.maskPreview.innerHTML = data.masks?.editable_surface ? '' : '(server 未回 ui_mask)';
       if(data.masks?.editable_surface) S.maskPreview.appendChild(img(data.masks.editable_surface));
-      S.depthPreview.innerHTML = data.depth_b64 ? '' : '(無深度或模型未載入)';
-      if(data.depth_b64) S.depthPreview.appendChild(imgFromB64(data.depth_b64));
       S.btnSaveMask.disabled = false;
       S.btnBatch.disabled = false;
       S.btnFurn.disabled = false;
@@ -246,24 +228,23 @@
     }catch(e){ S.upInfo.textContent = 'ERR: ' + e.message; }
   });
 
-  // save mask (convert L mask -> UI PNG, then multipart upload)
+  // save mask: L -> UI PNG -> multipart
   S.btnSaveMask.addEventListener('click', async ()=>{
     const base = S.api.value.replace(/\/$/,'');
     if(!state.combinedMaskB64){ S.saveInfo.textContent = '尚未有初始遮罩'; return; }
     S.saveInfo.textContent = '轉換與上傳中...';
 
     try{
-      // Build a canvas from L mask (white=editable, black=protect)
-      const img = new Image();
-      img.src = 'data:image/png;base64,' + state.combinedMaskB64;
-      await img.decode();
-
+      // build canvas from L mask
+      const imgL = new Image();
+      imgL.src = 'data:image/png;base64,' + state.combinedMaskB64;
+      await imgL.decode();
       const cL = document.createElement('canvas');
-      cL.width = img.naturalWidth; cL.height = img.naturalHeight;
+      cL.width = imgL.naturalWidth; cL.height = imgL.naturalHeight;
       const xL = cL.getContext('2d');
-      xL.drawImage(img,0,0);
+      xL.drawImage(imgL,0,0);
 
-      // Convert to UI PNG (white=lock, transparent=editable)
+      // L -> UI (white=lock, transparent=editable)
       const cUI = document.createElement('canvas');
       cUI.width = cL.width; cUI.height = cL.height;
       const xUI = cUI.getContext('2d');
@@ -273,8 +254,7 @@
       for(let i=0;i<D.length;i+=4){
         const v = D[i]; // gray
         const editable = v > 127; // L: white=editable
-        // UI: white pixel with alpha 255 means LOCK; transparent means editable
-        O[i]=255; O[i+1]=255; O[i+2]=255; O[i+3] = editable ? 0 : 255;
+        O[i]=255; O[i+1]=255; O[i+2]=255; O[i+3] = editable ? 0 : 255; // UI: white=lock, alpha=0 editable
       }
       xUI.putImageData(od,0,0);
 
@@ -292,22 +272,11 @@
   // batch render
   S.btnBatch.addEventListener('click', async ()=>{
     const base = S.api.value.replace(/\/$/,'');
-    const palette = {
-      main: S.cMain.value,
-      acc1: S.c1.value,
-      acc2: S.c2.value,
-      acc3: S.c3.value
-    };
+    const palette = { main: S.cMain.value, acc1: S.c1.value, acc2: S.c2.value, acc3: S.c3.value };
     const styles = (S.styles.value||'').split(',').map(s=>s.trim()).filter(Boolean).slice(0,3);
     const payload = {
-      jobId: state.jobId,
-      styles,
-      palette,
-      logo: {
-        pos: S.logoPos.value,
-        scale: Number(S.logoScale.value || 0.18),
-        opacity: Number(S.logoOpacity.value || 0.9)
-      }
+      jobId: state.jobId, styles, palette,
+      logo: { pos: S.logoPos.value, scale: Number(S.logoScale.value||0.18), opacity: Number(S.logoOpacity.value||0.9) }
     };
     S.batchOut.innerHTML = '執行中...';
     try{
@@ -319,42 +288,34 @@
       if(d.error) throw new Error(d.error);
       const items = d.images || [];
       S.batchOut.innerHTML = '';
-      items.forEach(it=>{
-        if(it.url){
-          const box = el('div', {class:'out'});
-          const im = img(it.url);
-          im.addEventListener('click', ()=>{
-            state.lastImageUrl = it.url;
-            S.furnOut.innerHTML = '';
-            S.furnOut.appendChild(img(it.url));
-            S.btnDownload.disabled = false;
-          });
-          box.appendChild(im);
-          box.appendChild(el('div',{text: it.style || ''}));
-          S.batchOut.appendChild(box);
-          state.lastImageUrl = it.url; // keep last for download
-          S.btnDownload.disabled = false;
-        }else{
-          S.batchOut.appendChild(el('div',{class:'out', text: it.error || '生成失敗'}));
-        }
+      items.forEach((it, idx)=>{
+        const src = it.image_b64 ? ('data:image/png;base64,'+it.image_b64) : it.url;
+        const box = document.createElement('div'); box.className='out';
+        const im = img(src);
+        im.addEventListener('click', ()=>{
+          state.lastImageUrl = src; S.furnOut.innerHTML=''; S.furnOut.appendChild(img(src)); S.btnDownload.disabled = false;
+        });
+        box.appendChild(im);
+        box.appendChild(document.createTextNode(it.style || `風格${idx+1}`));
+        S.batchOut.appendChild(box);
+        state.lastImageUrl = src; S.btnDownload.disabled = false;
       });
     }catch(e){ S.batchOut.innerHTML = 'ERR: ' + e.message; }
   });
 
   // mask source toggle
   S.maskSrcRadios.forEach(r=>r.addEventListener('change', ()=>{
-    const useUpload = $('input[name="masksrc"]:checked').value === 'upload';
+    const useUpload = document.querySelector('input[name="masksrc"]:checked').value === 'upload';
     S.maskFile.disabled = !useUpload;
   }));
 
   // furniture type toggle
   S.ftypeRadios.forEach(r=>r.addEventListener('change', ()=>{
-    const t = $('input[name="ftype"]:checked').value;
+    const t = document.querySelector('input[name="ftype"]:checked').value;
     S.fReplace.style.display = t==='replace' ? '' : 'none';
     S.fRecolor.style.display = t==='recolor' ? '' : 'none';
   }));
 
-  // upload mask helper -> /upload/mask
   async function uploadMaskAndGetUrl(){
     const base = S.api.value.replace(/\/$/,'');
     const fd = new FormData();
@@ -370,17 +331,16 @@
   S.btnFurn.addEventListener('click', async ()=>{
     const base = S.api.value.replace(/\/$/,'');
     let maskUrl;
-    const src = $('input[name="masksrc"]:checked').value;
+    const src = document.querySelector('input[name="masksrc"]:checked').value;
     try{
       if(src === 'upload'){
         if(!S.maskFile.files?.length) throw new Error('請先選擇遮罩 PNG');
         maskUrl = await uploadMaskAndGetUrl();
-        state.maskUrlUploaded = maskUrl;
       }else{
         if(!state.jobId) throw new Error('尚未有 jobId');
         maskUrl = `/jobs/${state.jobId}/masks/final_L.png`;
       }
-      const t = $('input[name="ftype"]:checked').value;
+      const t = document.querySelector('input[name="ftype"]:checked').value;
       const payload = { jobId: state.jobId, mask: maskUrl, type: t };
       if(t==='replace'){ payload.spec = S.fSpec.value || 'modern sofa with metal legs'; }
       else { payload.color = S.fColor.value || '#1E3A8A'; }
@@ -390,9 +350,19 @@
       });
       const d = await r.json();
       if(d.error) throw new Error(d.error);
-      state.lastImageUrl = d.imageUrl;
+      const srcImg = d.image_b64 ? ('data:image/png;base64,'+d.image_b64) : d.imageUrl;
+      if(!srcImg) throw new Error('回傳沒有 image_b64 或 imageUrl');
       S.furnOut.innerHTML = '';
-      S.furnOut.appendChild(img(d.imageUrl));
+      const im = img(srcImg);
+      im.onerror = ()=>{
+        const msg = document.createElement('div');
+        msg.textContent = '圖片載入失敗，請點下方連結開啟：';
+        const a = document.createElement('a');
+        a.href = srcImg; a.textContent = '開啟圖片'; a.target = '_blank';
+        S.furnOut.appendChild(msg); S.furnOut.appendChild(a);
+      };
+      S.furnOut.appendChild(im);
+      state.lastImageUrl = srcImg;
       S.btnDownload.disabled = false;
     }catch(e){
       S.furnOut.innerHTML = 'ERR: ' + e.message;
