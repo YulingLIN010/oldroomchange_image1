@@ -277,7 +277,7 @@ $('#btnDetect').addEventListener('click', async ()=>{
     if(!r.ok){ r = await fetch(BASE_URL+'/detect',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({image_id:state.image.id})}); }
     const d = await r.json();
     state.maskVersion = d.mask_version;
-    $('#detectBadge').textContent='完成 ✔' + (d.detector?`（${d.detector==='vision'?'Vision':'${d.detector}'}）`:'' );
+    $('#detectBadge').textContent = '完成 ✔' + (d.detector ? `（${({vision:'Vision', opencv:'OpenCV', naive:'naive'})[d.detector] || d.detector}）` : '');
     // 合併遮罩（含綠色鎖定區高亮）
     $('#merged').src = ABS(d.merged_overlay); $('#merged').classList.remove('hidden');
     // 把鎖定遮罩（白=鎖定）讀入 lockLayer 供後續畫/擦
@@ -383,6 +383,7 @@ $('#btnGenerate').onclick = async ()=>{
   };
   try{
     const r=await fetch(BASE_URL+'/generate',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    if(!r.ok){ const t=await r.text(); throw new Error('生成失敗：HTTP '+r.status+' '+t); }
     const d=await r.json();
     state.variants = d.variants||[]; renderVariants(); $('#genBadge').textContent='完成 ✔';
     renderCompare();
@@ -405,7 +406,7 @@ function renderVariants(){
       </div>`;
     card.querySelector('.choose').onclick=async ()=>{
       try{
-        await fetch(BASE_URL+'/select',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({image_id:state.image.id, result_id:v.result_id})});
+        const _sel=await fetch(BASE_URL+'/select',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({image_id:state.image.id, result_id:v.result_id})}); if(!_sel.ok){ const t=await _sel.text(); throw new Error('選擇失敗：HTTP '+_sel.status+' '+t); }
         state.selectedResultId=v.result_id;
         $('#btnFurniture').disabled=false;
         // 顯示到家具編修底圖
@@ -467,7 +468,9 @@ $('#btnFurniture').onclick=async()=>{
   const maskURL = state.fmask.toDataURL('image/png');
   const payload = { image_id:state.image.id, result_id:state.selectedResultId, action:$('#fAction').value, object:$('#fObject').value, color:$('#fColor').value, mask_data_url:maskURL };
   try{
-    const d = await (await fetch(BASE_URL+'/furniture',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)})).json();
+    const _f=await fetch(BASE_URL+'/furniture',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    if(!_f.ok){ const t=await _f.text(); throw new Error('家具操作失敗：HTTP '+_f.status+' '+t); }
+    const d = await _f.json();
     if(!d.ok) throw new Error(d.error||'家具操作失敗');
     // 顯示結果與下載（含 LOGO）
     const box = $('#fResult'); const card=document.createElement('div'); card.className='c-card card-img';
