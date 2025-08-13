@@ -7,3 +7,6 @@ requests>=2.31.0
 opencv-python-headless==4.10.0.84
 openai>=1.30.0
 gunicorn==21.2.0
+itsdangerous>=2.1.2
+PyJWT>=2.8.0
+prometheus-client>=0.20.0

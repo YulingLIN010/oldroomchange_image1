@@ -1,0 +1,222 @@
+
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>舊屋換新風格 — 可愛風前端</title>
+<style>
+  :root{
+    --bg:#FFF9FB; --card:#FFFFFF; --ink:#2B2B2B;
+    --brand:#FF82A9; --brand-2:#B8E0F2; --brand-3:#F9D5E5; --accent:#A8E6CF;
+    --bd:#FFD1DC; --pill:#FFE4EC; --shadow:0 6px 16px rgba(255,130,169,.22);
+  }
+  body{font-family:ui-rounded,system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans TC",Arial,sans-serif;background:var(--bg);color:var(--ink);margin:16px}
+  h1{font-weight:800; letter-spacing:.5px}
+  .row{display:flex;flex-wrap:wrap;gap:16px}
+  .col{flex:1 1 360px;min-width:320px}
+  .card{background:var(--card);border:2px solid var(--bd);border-radius:18px;padding:14px;box-shadow:var(--shadow)}
+  .badge{display:inline-flex;align-items:center;gap:6px;background:var(--pill);border:1px dashed var(--bd);border-radius:999px;padding:6px 12px;font-size:12px}
+  .btn{padding:10px 14px;border:2px solid var(--brand);border-radius:999px;background:#fff;cursor:pointer;box-shadow:var(--shadow)}
+  .btn.primary{background:var(--brand);color:#fff}
+  .btn.ghost{border-color:var(--bd);background:var(--card)}
+  .tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  #canvasWrap{position:relative;display:none}
+  #imgCanvas,#maskCanvas{border:2px solid var(--bd);border-radius:14px;box-shadow:var(--shadow)}
+  #maskCanvas{position:absolute;left:0;top:0}
+  select,input[type="color"],input[type="range"]{border:2px solid var(--bd);border-radius:10px;padding:6px;background:#fff}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+  .thumb{width:100%;height:auto;border-radius:12px;border:2px solid var(--bd);box-shadow:var(--shadow);background:#fff}
+  .muted{color:#666;font-size:12px}
+  .title{display:flex;align-items:center;gap:8px}
+</style>
+<script>
+const BASE_URL = (window.API_BASE || 'https://oldroomchange-image3.onrender.com');
+</script>
+</head>
+<body>
+  <div class="title"><h1>✨ 舊屋換新風格</h1><span class="badge">可愛風 UI</span></div>
+  <div class="muted">BASE_URL = <code id="baseUrl"></code></div>
+
+  <div class="row">
+    <div class="col card">
+      <h2>1) 上傳圖片</h2>
+      <input id="file" type="file" accept="image/png,image/jpeg"/>
+      <span id="uploadStatus" class="badge">📤 尚未上傳</span>
+      <div id="canvasWrap"><canvas id="imgCanvas"></canvas><canvas id="maskCanvas"></canvas></div>
+      <div class="tools" id="maskTools" style="display:none">
+        <label>🖌 筆刷 <input id="brush" type="range" min="8" max="80" value="24"></label>
+        <label><input type="radio" name="mode" value="editable" checked> 塗白(可編輯)</label>
+        <label><input type="radio" name="mode" value="lock"> 塗黑(保護)</label>
+        <button class="btn ghost" id="btnAuto">🤖 自動偵測 v1</button>
+        <button class="btn ghost" id="btnAutoV2">🧠 GPT Vision v2</button>
+        <button class="btn ghost" id="btnSave">💾 儲存遮罩</button>
+        <button class="btn ghost" id="btnClear">🧽 清空</button>
+      </div>
+    </div>
+
+    <div class="col card">
+      <h2>2) 風格與色卡</h2>
+      <div class="tools">
+        <select id="styles" multiple size="8" style="min-width:220px"></select>
+        <div>
+          <div>主色 <input type="color" id="cMain" value="#FF82A9"></div>
+          <div>配色 <input type="color" id="c1" value="#B8E0F2"> <input type="color" id="c2" value="#F9D5E5"> <input type="color" id="c3" value="#A8E6CF"></div>
+        </div>
+      </div>
+      <div class="tools">
+        <button id="btnGenerate" class="btn primary">🎨 3) 生成變體（≤3）</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:12px">
+    <h2>結果</h2>
+    <div class="muted">請選定一張喜歡的風格圖，再進行家具編修</div>
+    <div id="variants" class="grid"></div>
+  </div>
+
+  <div class="row" style="margin-top:12px">
+    <div class="col card">
+      <h2>4) 四格比對牆</h2>
+      <div id="compare" class="grid"></div>
+    </div>
+    <div class="col card">
+      <h2>5) 家具編修（需先選定變體）</h2>
+      <div class="tools">
+        <select id="fAction">
+          <option value="add">新增</option>
+          <option value="swap">更換</option>
+          <option value="recolor">改色</option>
+        </select>
+        <input id="fObject" placeholder="家具描述或名稱"/>
+        <input id="fColor" type="color" value="#cc9966"/>
+        <button id="btnRect" class="btn ghost">🟦 框選區域</button>
+        <button id="btnFurniture" class="btn primary" disabled>🛋 套用家具</button>
+      </div>
+      <div class="muted">提示：先「框選區域」，在圖上拖曳矩形；系統僅在該區域編輯。</div>
+    </div>
+  </div>
+
+<script>
+const $ = (q)=>document.querySelector(q); const $$=(q)=>[...document.querySelectorAll(q)];
+$('#baseUrl').textContent = BASE_URL;
+const state = { image:null, maskVersion:null, variants:[], selectedResultId:null };
+
+const pv = $('#imgCanvas'), mk = $('#maskCanvas'); const ictx = pv.getContext('2d'), mctx = mk.getContext('2d');
+
+// load styles
+(async()=>{
+  const d = await (await fetch(BASE_URL+'/meta/styles')).json();
+  if(d.ok){ $('#styles').innerHTML = d.styles.map(s=>`<option>${s.name}</option>`).join(''); }
+})();
+
+// upload + preview
+$('#file').addEventListener('change', async (e)=>{
+  const f = e.target.files?.[0]; if(!f) return;
+  const bmp = await createImageBitmap(f);
+  pv.width = bmp.width>1024?1024:bmp.width; pv.height = Math.round(bmp.height*(pv.width/bmp.width));
+  mk.width = pv.width; mk.height = pv.height;
+  ictx.drawImage(bmp,0,0,pv.width,pv.height); mctx.clearRect(0,0,mk.width,mk.height);
+  $('#canvasWrap').style.display='inline-block'; $('#maskTools').style.display='flex';
+
+  let up=f; if(f.size>2*1024*1024){ const c=document.createElement('canvas'); c.width=pv.width; c.height=pv.height;
+    const t=c.getContext('2d'); t.drawImage(bmp,0,0,c.width,c.height); const blob=await new Promise(r=>c.toBlob(r,'image/jpeg',0.85)); up=new File([blob],'compressed.jpg',{type:'image/jpeg'}); }
+  const fd=new FormData(); fd.append('file', up);
+  const r = await fetch(BASE_URL+'/upload',{method:'POST',body:fd}); const d = await r.json();
+  if(!d.ok) return alert(d.error||'上傳失敗'); state.image={id:d.image_id,w:d.w,h:d.h}; $('#uploadStatus').textContent='✅ 已上傳';
+});
+
+// brush
+let drawing=false; let mode='editable'; $('#brush').addEventListener('input',e=>brush=e.target.value);
+$$('input[name="mode"]').forEach(r=>r.addEventListener('change',()=>mode=document.querySelector('input[name="mode"]:checked').value));
+mk.addEventListener('mousedown',e=>{drawing=true;paint(e)});
+mk.addEventListener('mousemove',paint); document.addEventListener('mouseup',()=>drawing=false);
+function paint(e){ if(!drawing) return; const rect=mk.getBoundingClientRect(); const x=e.clientX-rect.left, y=e.clientY-rect.top; mctx.fillStyle=(mode==='editable')?'white':'black'; mctx.beginPath(); mctx.arc(x,y,24,0,Math.PI*2); mctx.fill(); }
+$('#btnClear').onclick=()=>mctx.clearRect(0,0,mk.width,mk.height);
+
+// detect v1
+$('#btnAuto').onclick=async ()=>{
+  if(!state.image) return alert('請先上傳');
+  const d = await (await fetch(BASE_URL+'/detect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_id:state.image.id})})).json();
+  if(!d.ok) return alert(d.error||'偵測失敗');
+  state.maskVersion = d.mask_version;
+  const img=new Image(); img.onload=()=>{mctx.clearRect(0,0,mk.width,mk.height); mctx.drawImage(img,0,0,mk.width,mk.height)}; img.src = BASE_URL + d.editable_mask;
+};
+
+// detect v2 (GPT Vision)
+$('#btnAutoV2').onclick=async()=>{
+  if(!state.image) return alert('請先上傳');
+  const res = await fetch(BASE_URL+'/detect/v2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_id:state.image.id})});
+  const d = await res.json(); if(!d.ok) return alert(d.error||'偵測失敗');
+  state.maskVersion = d.mask_version;
+  const img=new Image(); img.onload=()=>{mctx.clearRect(0,0,mk.width,mk.height); mctx.drawImage(img,0,0,mk.width,mk.height)}; img.src = BASE_URL + d.editable_mask;
+};
+
+// save mask
+$('#btnSave').onclick=async()=>{
+  if(!state.image) return alert('請先上傳');
+  const blob = await new Promise(r=>mk.toBlob(r,'image/png')); const fd=new FormData();
+  fd.append('image_id', state.image.id); fd.append('editable_mask', blob, 'editable.png');
+  const d = await (await fetch(BASE_URL+'/mask/commit',{method:'POST',body:fd})).json();
+  if(!d.ok) return alert(d.error||'儲存遮罩失敗'); state.maskVersion = d.mask_version; alert('已儲存 v'+state.maskVersion);
+};
+
+// generate
+$('#btnGenerate').onclick=async()=>{
+  const sels = Array.from($('#styles').selectedOptions).map(o=>o.value).slice(0,3);
+  if(!state.image) return alert('先上傳'); if(!state.maskVersion) return alert('請先自動偵測或儲存遮罩'); if(sels.length===0) return alert('至少選 1 種風格');
+  const palette = {main:$('#cMain').value, accents:[$('#c1').value,$('#c2').value,$('#c3').value]};
+  const d = await (await fetch(BASE_URL+'/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_id:state.image.id,mask_version:state.maskVersion,styles:sels,palette})})).json();
+  if(!d.ok) return alert(d.error||'生成失敗'); state.variants = d.variants; renderVariants(); renderCompare();
+};
+
+function renderVariants(){
+  const box = $('#variants'); box.innerHTML='';
+  for(const v of state.variants){
+    const el = document.createElement('div'); el.innerHTML = `
+      <img class="thumb" src="${BASE_URL+v.url}">
+      <div class="tools">
+        <button class="btn" data-sel="${v.result_id}">✅ 選定</button>
+        <a class="btn ghost" href="${BASE_URL}/download?image_id=${state.image.id}&result_id=${v.result_id}&fmt=png&size=hires" target="_blank">下載PNG</a>
+      </div>`;
+    el.querySelector('button').onclick = async ()=>{
+      const d = await (await fetch(BASE_URL+'/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_id:state.image.id,result_id:v.result_id})})).json();
+      if(!d.ok) return alert(d.error||'選定失敗'); state.selectedResultId = v.result_id; $('#btnFurniture').disabled=false;
+    };
+    box.appendChild(el);
+  }
+}
+
+function renderCompare(){
+  const box = $('#compare'); box.innerHTML='';
+  const ids = state.variants.slice(0,3).map(v=>v.result_id).join(',');
+  fetch(BASE_URL+`/compare?base=${state.image?.id||''}&vars=${ids}&logo=1`).then(r=>r.json()).then(d=>{
+    if(d.ok){ for(const it of d.items){ const el=document.createElement('div'); el.innerHTML=`<img class="thumb" src="${BASE_URL+it.url}">`; box.appendChild(el);} }
+  });
+}
+
+// furniture rect
+let rectMode=false, st=null;
+$('#btnRect').onclick=()=>{ if(!state.image) return alert('先上傳'); rectMode=!rectMode; $('#btnRect').textContent = rectMode?'🟦 框選中…':'🟦 框選區域'; };
+pv.addEventListener('mousedown',e=>{ if(!rectMode) return; st={x:e.offsetX,y:e.offsetY};});
+pv.addEventListener('mouseup',e=>{
+  if(!rectMode||!st) return;
+  const x=Math.min(st.x,e.offsetX), y=Math.min(st.y,e.offsetY), w=Math.abs(e.offsetX-st.x), h=Math.abs(e.offsetY-st.y);
+  mctx.save(); mctx.fillStyle='white'; mctx.fillRect(x,y,w,h); mctx.restore();
+  rectMode=false; $('#btnRect').textContent='🟦 框選區域';
+});
+
+// furniture apply
+$('#btnFurniture').onclick=async()=>{
+  if(!state.selectedResultId) return alert('請先選定變體');
+  const url = mk.toDataURL('image/png');
+  const payload = {image_id:state.image.id, result_id:state.selectedResultId, action:$('#fAction').value, object:$('#fObject').value, color:$('#fColor').value, mask_data_url:url};
+  const d = await (await fetch(BASE_URL+'/furniture',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json();
+  if(!d.ok) return alert(d.error||'家具操作失敗');
+  state.variants.unshift({result_id:d.result_id, style:'furniture', url:d.url, download_url:d.url});
+  renderVariants(); renderCompare();
+};
+</script>
+</body>
+</html>

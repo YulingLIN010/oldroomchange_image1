@@ -1,0 +1,358 @@
+<!-- ======= 壹宅　活潑可愛風・前端一頁式（Strikingly 版） ======= -->
+<style>
+:root{
+  --pink:#ffd1dc; --mint:#c8f7dc; --lemon:#fff5cc; --sky:#bfe9ff; --ink:#404545;
+  --bg:#fff; --accent:#ff8fb1; --brand:#ff7aa2;
+  --radius:18px; --shadow:0 6px 20px rgba(0,0,0,.08);
+}
+*{box-sizing:border-box} .cute{font-family:"Nunito","Segoe UI",system-ui,-apple-system,"PingFang TC","Microsoft JhengHei",sans-serif;color:var(--ink)}
+.c-card{background:var(--bg); border-radius:var(--radius); box-shadow:var(--shadow); padding:16px; position:relative; overflow:hidden}
+.c-card:before{content:""; position:absolute; width:140px;height:140px; right:-40px; top:-40px; border-radius:50%; background:radial-gradient(circle at 30% 30%, var(--pink), #fff0); opacity:.5}
+.c-title{font-weight:800; font-size:18px; display:flex; align-items:center; gap:8px}
+.c-title .b{background:var(--pink); padding:4px 10px; border-radius:999px}
+.row{display:grid; gap:14px}
+.grid-2{grid-template-columns:1fr 1fr} .grid-3{grid-template-columns:1fr 1fr 1fr}
+.btn{border:none; border-radius:999px; padding:10px 14px; background:linear-gradient(120deg,var(--accent),var(--brand));
+ color:#fff; font-weight:700; box-shadow:var(--shadow); cursor:pointer; transition:transform .05s ease}
+.btn:active{transform:translateY(1px)} .btn-ghost{background:#0000;color:var(--ink); border:2px dashed var(--accent)}
+.pill{display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:999px; background:var(--lemon); font-weight:700}
+.badge{display:inline-block; padding:4px 8px; border-radius:999px; background:var(--mint); font-size:12px; font-weight:700}
+.help{font-size:12px; opacity:.7}
+hr.c{border:none; height:1px; background:linear-gradient(90deg,#0000,#0002,#0000); margin:10px 0}
+.preview{width:100%; border-radius:12px; border:1px solid #eee; box-shadow:var(--shadow)}
+.toolbar{display:flex; gap:8px; flex-wrap:wrap; align-items:center}
+.tool{background:#fff; border:1px dashed var(--accent); border-radius:999px; padding:8px 12px; cursor:pointer}
+.tool.active{background:var(--pink)}
+.color-chip{width:28px;height:28px;border-radius:8px;border:2px solid #fff; box-shadow:0 2px 6px #0002; cursor:pointer}
+.flex{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+.hidden{display:none}
+.note{background:var(--sky); padding:8px 12px; border-radius:10px; font-size:12px}
+.small{font-size:12px}
+.kawaii{background:linear-gradient(180deg,#fff, #fff8fb)}
+/* 四格牆下載鈕 */
+.dl{position:absolute; top:10px; right:10px; text-decoration:none; background:#0008; color:#fff; padding:6px 8px; border-radius:8px; font-weight:800}
+.card-img{position:relative}
+</style>
+
+<div class="cute row grid-2 kawaii" id="app">
+
+  <!-- 左：流程區 -->
+  <div class="row">
+    <!-- 1. 上傳＋即預覽 -->
+    <div class="c-card">
+      <div class="c-title"><span class="b">①</span> 上傳舊屋照片（≤2MB）</div>
+      <div class="help">選檔後立即顯示預覽；若超過 2MB 會先在瀏覽器端自動壓縮再上傳。</div>
+      <div class="toolbar" style="margin:8px 0;">
+        <label class="tool">📷 選擇檔案 <input id="file" type="file" accept="image/png,image/jpeg" style="display:none"></label>
+        <span id="uploadStatus" class="badge">尚未上傳</span>
+      </div>
+      <img id="preview" class="preview" alt="預覽將顯示於此">
+    </div>
+
+    <!-- 2. 自動偵測＆合併遮罩 -->
+    <div class="c-card">
+      <div class="c-title"><span class="b">②</span> 自動結構＋深度偵測</div>
+      <div class="toolbar">
+        <button id="btnDetect" class="btn">🔍 偵測梁柱牆門窗</button>
+        <span id="detectBadge" class="badge">待偵測</span>
+      </div>
+      <hr class="c">
+      <div class="help">完成後會出現 <b>合併遮罩</b> 圖層，下一步進入「手繪修正」。</div>
+      <img id="merged" class="preview hidden" alt="合併遮罩預覽">
+    </div>
+
+    <!-- 3. 合併遮罩：最後修正（手繪） -->
+    <div class="c-card">
+      <div class="c-title"><span class="b">③</span> 遮罩最後修正（僅在合併遮罩上）</div>
+      <div class="help">模式：<b>Editable</b>＝可改區（家具/材質替換）；<b>Locked</b>＝不可變動的結構。</div>
+      <div class="toolbar">
+        <button class="tool active" data-mode="editable">🖌️ 畫 Editable</button>
+        <button class="tool" data-mode="locked">🧱 畫 Locked</button>
+        <label class="tool">筆刷<input id="brush" type="range" min="6" max="40" value="16" style="vertical-align:middle"></label>
+        <button id="btnUndo" class="tool">↩︎ 復原</button>
+        <button id="btnCommitMask" class="btn">✅ 送出最終遮罩</button>
+        <span id="maskBadge" class="badge">未提交</span>
+      </div>
+      <div style="position:relative">
+        <canvas id="canvas" class="preview" height="0"></canvas>
+        <div class="note" style="margin-top:8px;">技巧：切換模式後在需要處直接塗抹；提交後，後端的生圖會以 <b>最終遮罩＋原圖＋Prompt＋知識庫</b> 為準。</div>
+      </div>
+    </div>
+
+    <!-- 4. 風格＋色卡 -->
+    <div class="c-card">
+      <div class="c-title"><span class="b">④</span> 選風格（≤3）與色卡（1主＋1/2/3配）</div>
+      <div class="row grid-3" id="styleList"></div>
+      <hr class="c">
+      <div class="flex">
+        <span class="pill">🎨 主色</span><input type="color" id="mainColor" value="#ffd1dc" class="color-chip">
+        <span class="pill">配色</span><div id="accents"></div>
+        <button id="addAccent" class="tool">＋新增配色</button>
+        <button id="removeAccent" class="tool">－移除配色</button>
+      </div>
+    </div>
+
+    <!-- 5. 生成與選定 Gate -->
+    <div class="c-card">
+      <div class="c-title"><span class="b">⑤</span> 生成 1–3 張新風格圖（gpt-image-1）</div>
+      <div class="toolbar">
+        <button id="btnGenerate" class="btn">🌟 開始生成</button>
+        <span id="genBadge" class="badge">待生成</span>
+      </div>
+      <div id="variants" class="row grid-3" style="margin-top:10px"></div>
+      <div class="toolbar" style="margin-top:8px">
+        <button id="btnFurniture" class="btn" disabled>🛋️ 進入家具編修（需先選一張）</button>
+        <button id="btnSkipDownload" class="btn-ghost" disabled>⬇︎ 直接下載這張</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 右：四格比對牆（含下載） -->
+  <div class="c-card">
+    <div class="c-title"><span class="b">⑥</span> 四格比對牆（原圖＋最多 3 張變體）</div>
+    <div id="compare" class="row grid-2" style="margin-top:10px"></div>
+    <div class="help">每一格右上角 ⬇︎ 可直接下載（皆含壹宅 LOGO）。</div>
+  </div>
+
+</div>
+
+<script>
+const BASE_URL = (window.API_BASE||'https://oldroomchange-image3.onrender.com');
+const $ = (q)=>document.querySelector(q); const $$=(q)=>[...document.querySelectorAll(q)];
+const state = {
+  image:null,     // {id,w,h,previewURL}
+  maskVersion:null,
+  masks:{lock:null, editable:null, merged:null, depth:null},
+  drawing:{mode:'editable', brush:16, history:[]},
+  styles:[], selectedStyles:new Set(), kbVersion:null,
+  palette:{main:'#ffd1dc', accents:['#bfe9ff']},
+  variants:[], selectedResultId:null
+};
+
+/* ============== 1) 上傳＋即時預覽（含 >2MB 壓縮） ============== */
+const fileInput = $('#file'), pv = $('#preview'), uploadStatus = $('#uploadStatus');
+fileInput.addEventListener('change', async (e)=>{
+  const f = e.target.files?.[0]; if(!f) return;
+  pv.src = URL.createObjectURL(f); // 立即預覽
+  const file = await compressIfNeeded(f, 2*1024*1024);
+  const fd = new FormData(); fd.append('file', file);
+  uploadStatus.textContent='上傳中…';
+  try{
+    const r = await fetch(BASE_URL+'/upload',{method:'POST',body:fd});
+    const d = await r.json();
+    state.image={id:d.image_id,w:d.w,h:d.h,previewURL:pv.src};
+    uploadStatus.textContent='已上傳 ✔';
+    // 初始化 compare 牆（先只放原圖）
+    renderCompare();
+  }catch(err){ alert('上傳失敗'); uploadStatus.textContent='上傳失敗'; }
+});
+async function compressIfNeeded(file, maxBytes){
+  if(file.size<=maxBytes) return file;
+  const bmp = await createImageBitmap(file);
+  const scale = Math.min(1, Math.sqrt(maxBytes / file.size));
+  const canvas = document.createElement('canvas'); canvas.width=bmp.width*scale; canvas.height=bmp.height*scale;
+  const ctx = canvas.getContext('2d'); ctx.drawImage(bmp,0,0,canvas.width,canvas.height);
+  const blob = await new Promise(res=>canvas.toBlob(res,'image/jpeg',0.85));
+  return new File([blob],'compressed.jpg',{type:'image/jpeg'});
+}
+
+/* ============== 0) 讀知識庫樣式清單 ============== */
+(async function loadMeta(){
+  try{
+    const r=await fetch(BASE_URL+'/meta/styles'); const d=await r.json();
+    state.styles = d.styles||[]; state.kbVersion = d.kb_version||'kb';
+  }catch{ // 後端尚未提供時的安全預設
+    state.styles = [{code:'modern',name:'現代風'},{code:'classical',name:'古典風'},{code:'industrial',name:'工業風'},{code:'scandinavian',name:'北歐風'}];
+    state.kbVersion = 'kb-local';
+  }
+  renderStyleList();
+})();
+
+/* ============== 2) 自動偵測（梁柱牆門窗＋深度） ============== */
+$('#btnDetect').addEventListener('click', async ()=>{
+  if(!state.image) return alert('請先上傳圖片');
+  $('#detectBadge').textContent='偵測中…';
+  try{
+    const r = await fetch(BASE_URL+'/detect',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({image_id:state.image.id})});
+    const d = await r.json();
+    state.maskVersion = d.mask_version;
+    state.masks = { lock:d.lock_mask, editable:d.editable_mask, merged:d.merged_overlay, depth:d.depth_map };
+    $('#detectBadge').textContent='完成 ✔';
+    $('#merged').src = d.merged_overlay; $('#merged').classList.remove('hidden');
+    await initCanvasForEditing(d); // 載入遮罩到可繪層
+  }catch(err){ alert('偵測失敗'); $('#detectBadge').textContent='失敗'; }
+});
+
+/* ============== 3) 合併遮罩：最後修正（畫 Editable/Locked） ============== */
+const canvas = $('#canvas'); const brush = $('#brush');
+let ctx, imgW=0, imgH=0;
+async function initCanvasForEditing(d){
+  // 背景載原圖以利比對；兩層繪圖分別代表 editable 與 locked
+  const base = await loadImage(state.image.previewURL);
+  imgW = base.width; imgH = base.height;
+  canvas.width=imgW; canvas.height=imgH; ctx = canvas.getContext('2d');
+  ctx.drawImage(base,0,0,imgW,imgH); // 背景（參考）
+  // 疊合併遮罩半透明顯示
+  const merged = await loadImage(d.merged_overlay);
+  ctx.globalAlpha = .35; ctx.drawImage(merged,0,0,imgW,imgH); ctx.globalAlpha = 1;
+
+  // 建兩個離屏 canvas 作為可編輯遮罩、鎖定遮罩（載入後端初始版本）
+  state._editableLayer = await loadToOffscreen(d.editable_mask);
+  state._lockedLayer   = await loadToOffscreen(d.lock_mask);
+
+  // 啟用畫筆
+  enableDrawing();
+}
+function loadImage(src){ return new Promise((res,rej)=>{ const i=new Image(); i.crossOrigin="anonymous"; i.onload=()=>res(i); i.onerror=rej; i.src=src; }); }
+async function loadToOffscreen(url){
+  const img = await loadImage(url); const c=document.createElement('canvas'); c.width=img.width; c.height=img.height; c.getContext('2d').drawImage(img,0,0); return c;
+}
+function enableDrawing(){
+  const tools=$$('.tool[data-mode]'); tools.forEach(t=>t.onclick=()=>{ tools.forEach(x=>x.classList.remove('active')); t.classList.add('active'); state.drawing.mode=t.dataset.mode; });
+  brush.oninput=()=>state.drawing.brush=+brush.value;
+  let painting=false, last=null;
+  canvas.onmousedown=(e)=>{painting=true; last=pos(e); pushHistory(); drawDot(last.x,last.y);};
+  canvas.onmousemove=(e)=>{ if(painting){ const p=pos(e); drawLine(last,p); last=p; } };
+  window.onmouseup=()=>painting=false;
+  $('#btnUndo').onclick=undo;
+  $('#btnCommitMask').onclick=commitMask;
+}
+function pos(e){ const r=canvas.getBoundingClientRect(); return {x:Math.round((e.clientX-r.left)*canvas.width/r.width), y:Math.round((e.clientY-r.top)*canvas.height/r.height)} }
+function targetLayer(){ return state.drawing.mode==='editable' ? state._editableLayer : state._lockedLayer; }
+function drawDot(x,y){ drawLine({x,y},{x:x+.1,y:y+.1}); }
+function drawLine(a,b){
+  const c = targetLayer(); const cctx=c.getContext('2d');
+  cctx.lineCap='round'; cctx.lineJoin='round';
+  cctx.strokeStyle = state.drawing.mode==='editable' ? 'white' : 'black'; // 假設 editable=白、locked=黑
+  cctx.lineWidth = state.drawing.brush; cctx.beginPath(); cctx.moveTo(a.x,a.y); cctx.lineTo(b.x,b.y); cctx.stroke();
+  // 畫在主畫布做視覺提示（彩色）
+  ctx.drawImage(state.drawing.mode==='editable'? tint(c,'#4ade80',.4) : tint(c,'#ef4444',.4),0,0);
+}
+function tint(srcCanvas,color,alpha){
+  const c=document.createElement('canvas'); c.width=srcCanvas.width; c.height=srcCanvas.height;
+  const cx=c.getContext('2d'); cx.drawImage(srcCanvas,0,0);
+  cx.globalCompositeOperation='source-in'; cx.fillStyle=color; cx.globalAlpha=alpha; cx.fillRect(0,0,c.width,c.height);
+  cx.globalCompositeOperation='source-over'; cx.globalAlpha=1; return c;
+}
+/* 簡易復原 */
+function pushHistory(){ state.drawing.history.push({ e:state._editableLayer.toDataURL(), l:state._lockedLayer.toDataURL() }); if(state.drawing.history.length>20) state.drawing.history.shift(); }
+function undo(){ const h=state.drawing.history.pop(); if(!h) return; loadImage(h.e).then(i=>{const c=state._editableLayer.getContext('2d'); c.clearRect(0,0,imgW,imgH); c.drawImage(i,0,0)}); loadImage(h.l).then(i=>{const c=state._lockedLayer.getContext('2d'); c.clearRect(0,0,imgW,imgH); c.drawImage(i,0,0)}); }
+
+/* 提交最終遮罩（兩張 PNG） */
+async function commitMask(){
+  if(!state.image) return;
+  $('#maskBadge').textContent='提交中…';
+  const [lockBlob, editableBlob] = await Promise.all([ blobFromCanvas(state._lockedLayer), blobFromCanvas(state._editableLayer) ]);
+  const fd = new FormData();
+  fd.append('image_id', state.image.id);
+  fd.append('lock_mask', lockBlob, 'lock.png');
+  fd.append('editable_mask', editableBlob, 'editable.png');
+  try{
+    const r=await fetch(BASE_URL+'/mask/commit',{method:'POST',body:fd});
+    const d=await r.json(); state.maskVersion=d.mask_version; $('#maskBadge').textContent='已提交 v'+d.mask_version+' ✔';
+  }catch{ alert('提交失敗'); $('#maskBadge').textContent='失敗'; }
+}
+function blobFromCanvas(c){ return new Promise(res=>c.toBlob(res,'image/png')); }
+
+/* ============== 4) 風格清單＆色卡（1 主 + 1/2/3 配） ============== */
+function renderStyleList(){
+  const box = $('#styleList'); box.innerHTML='';
+  state.styles.forEach(s=>{
+    const id='s_'+s.code;
+    const d=document.createElement('label'); d.className='c-card'; d.style.cursor='pointer';
+    d.innerHTML=`<div class="flex"><input type="checkbox" id="${id}" data-code="${s.code}">
+      <span class="pill">💖 ${s.name||s.code}</span><span class="small">（最多 3）</span></div>`;
+    d.querySelector('input').onchange=(e)=>{
+      const code=e.target.dataset.code;
+      if(e.target.checked){ if(state.selectedStyles.size>=3){ e.target.checked=false; alert('最多選三種'); return; } state.selectedStyles.add(code); }
+      else state.selectedStyles.delete(code);
+    };
+    box.appendChild(d);
+  });
+  // 色卡
+  $('#mainColor').oninput=(e)=>state.palette.main=e.target.value;
+  const accentsBox = $('#accents'); function rerenderAccents(){
+    accentsBox.innerHTML='';
+    state.palette.accents.forEach((v,i)=>{
+      const inp=document.createElement('input'); inp.type='color'; inp.value=v; inp.className='color-chip';
+      inp.oninput=(e)=>state.palette.accents[i]=e.target.value; accentsBox.appendChild(inp);
+    });
+  }
+  $('#addAccent').onclick=()=>{ if(state.palette.accents.length>=3) return alert('配色最多 3 個'); state.palette.accents.push('#c8f7dc'); rerenderAccents(); };
+  $('#removeAccent').onclick=()=>{ if(state.palette.accents.length<=1) return alert('至少 1 個配色'); state.palette.accents.pop(); rerenderAccents(); };
+  rerenderAccents();
+}
+
+/* ============== 5) 生成變體（gpt-image-1） ============== */
+$('#btnGenerate').onclick = async ()=>{
+  if(!state.image) return alert('請先上傳');
+  if(!state.maskVersion) return alert('請先完成偵測與遮罩提交');
+  if(state.selectedStyles.size===0) return alert('請至少選 1 種風格');
+  $('#genBadge').textContent='生成中…';
+  const body = {
+    image_id: state.image.id,
+    mask_version: state.maskVersion,
+    styles: [...state.selectedStyles],
+    palette: { main: state.palette.main, accents: state.palette.accents },
+    logo: true
+  };
+  try{
+    const r=await fetch(BASE_URL+'/generate',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    const d=await r.json();
+    state.variants = d.variants||[]; renderVariants(); $('#genBadge').textContent='完成 ✔';
+    // 同步四格牆
+    renderCompare();
+  }catch{ alert('生成失敗'); $('#genBadge').textContent='失敗'; }
+};
+
+function renderVariants(){
+  const box=$('#variants'); box.innerHTML='';
+  state.variants.forEach(v=>{
+    const card=document.createElement('div'); card.className='c-card';
+    card.innerHTML = `
+      <div class="card-img">
+        <img src="${v.url}" class="preview" alt="${v.style}">
+        <a class="dl" href="${v.download_url||v.url}" download>⬇︎</a>
+      </div>
+      <div class="toolbar" style="margin-top:8px">
+        <button class="btn choose">✅ 選擇此圖</button>
+        <span class="badge">style: ${v.style}</span>
+      </div>`;
+    card.querySelector('.choose').onclick=async ()=>{
+      try{
+        await fetch(BASE_URL+'/select',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({result_id:v.result_id})});
+        state.selectedResultId=v.result_id;
+        $('#btnFurniture').disabled=false; $('#btnSkipDownload').disabled=false;
+      }catch{ alert('選擇失敗'); }
+    };
+    box.appendChild(card);
+  });
+  // 若無變體，鎖按鈕
+  const able = state.variants.length>0;
+  $('#btnFurniture').disabled=!able; $('#btnSkipDownload').disabled=!able;
+}
+
+/* ============== 6) 四格比對牆（含下載） ============== */
+async function renderCompare(){
+  const box=$('#compare'); box.innerHTML='';
+  if(!state.image) return;
+  const varIds = (state.variants||[]).slice(0,3).map(v=>v.result_id).join(',');
+  try{
+    const r=await fetch(`${BASE_URL}/compare?base=${state.image.id}&vars=${varIds}&logo=1`);
+    const d=await r.json();
+    (d.items||[]).forEach(it=>{
+      const cell=document.createElement('div'); cell.className='c-card card-img';
+      cell.innerHTML=`<img src="${it.url}" class="preview"><a class="dl" href="${it.download_url||it.url}" download>⬇︎</a>`;
+      box.appendChild(cell);
+    });
+  }catch{ /* 靜默失敗即可 */ }
+}
+
+/* 家具 Gate & 略過直接下載 */
+$('#btnFurniture').onclick=()=>{ if(!state.selectedResultId) return; alert('✅ 已解鎖家具編修（此處可導向編修頁或彈窗）'); };
+$('#btnSkipDownload').onclick=()=>{
+  const v = state.variants.find(x=>x.result_id===state.selectedResultId)||state.variants[0];
+  if(!v) return alert('尚無可下載圖片'); location.href = v.download_url||v.url;
+};
+</script>
+<!-- ======= /END ======= -->

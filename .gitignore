@@ -1,8 +1,12 @@
-*.pyc
+# Python
 __pycache__/
+*.pyc
+.venv/
 .env
-static/uploads/*
-!static/uploads/.gitkeep
+*.DS_Store
 
-static/output/*
-!static/output/.gitkeep
+# Project runtime data
+data/**
+
+# Build artifacts
+*.zip
