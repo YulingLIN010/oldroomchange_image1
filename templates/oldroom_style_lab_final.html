@@ -130,11 +130,9 @@
   </fieldset>
 
   <fieldset>
-    <legend>5) 下載（前端臨時疊 Logo 用）</legend>
-    <p>如果後端尚未放置 <code>static/logo/LOGO.png</code>，此處可本地疊公司 Logo 後下載。</p>
-    <div>
-      <input id="dlLogo" type="file" accept="image/*">
-      <button id="btnDownload" disabled>下載目前顯示圖（疊本地 Logo）</button>
+    <legend>5) 下載（下載目前顯示圖）</legend>
+<div>
+<button id="btnDownload" disabled>下載目前顯示圖（疊本地 Logo）</button>
     </div>
   </fieldset>
 
@@ -174,9 +172,7 @@
     fColor: document.getElementById('fColor'),
     btnFurn: document.getElementById('btnFurn'),
     furnOut: document.getElementById('furnOut'),
-
-    dlLogo: document.getElementById('dlLogo'),
-    btnDownload: document.getElementById('btnDownload'),
+btnDownload: document.getElementById('btnDownload'),
   };
 
   let state = {
@@ -373,40 +369,18 @@
   S.btnDownload.addEventListener('click', async ()=>{
     try{
       if(!state.lastImageUrl) throw new Error('目前沒有可下載圖片');
-      const baseImg = await loadImage(state.lastImageUrl);
-      const cnv = document.createElement('canvas');
-      cnv.width = baseImg.naturalWidth; cnv.height = baseImg.naturalHeight;
-      const ctx = cnv.getContext('2d');
-      ctx.drawImage(baseImg, 0, 0);
-      if(S.dlLogo.files?.length){
-        const logo = await fileToImage(S.dlLogo.files[0]);
-        const scale = 0.18;
-        const w = Math.max(1, Math.floor(baseImg.naturalWidth * scale));
-        const h = Math.floor(w * logo.naturalHeight / logo.naturalWidth);
-        const pad = Math.floor(baseImg.naturalWidth * 0.03);
-        const x = baseImg.naturalWidth - w - pad;
-        const y = baseImg.naturalHeight - h - pad;
-        ctx.globalAlpha = 0.9;
-        ctx.drawImage(logo, x, y, w, h);
-        ctx.globalAlpha = 1.0;
-      }
-      const url = cnv.toDataURL('image/png');
       const a = document.createElement('a');
-      a.href = url; a.download = 'styled.png';
+      a.href = state.lastImageUrl;
+      a.download = 'styled.png';
+      document.body.appendChild(a);
       a.click();
+      a.remove();
     }catch(e){ alert(e.message); }
   });
 
   function loadImage(url){
     return new Promise((resolve,reject)=>{
       const i = new Image(); i.crossOrigin='anonymous'; i.onload=()=>resolve(i); i.onerror=reject; i.src=url;
-    });
-  }
-  function fileToImage(file){
-    return new Promise((resolve,reject)=>{
-      const fr = new FileReader();
-      fr.onload = ()=>{ const i = new Image(); i.onload=()=>resolve(i); i.onerror=reject; i.src=fr.result; };
-      fr.onerror = reject; fr.readAsDataURL(file);
     });
   }
 })();
