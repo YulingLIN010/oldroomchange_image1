@@ -292,12 +292,10 @@ def detect():
     editable.save(editable_path, "PNG")
     depth_img.save(depth_path, "PNG")
 
-    # merged overlay
+    # merged overlay：僅高亮鎖定區（綠）
     base = im.copy()
-    green = Image.new("RGBA",(w,h),(80,220,120,0)); green.putalpha(editable)
-    red   = Image.new("RGBA",(w,h),(239,68,68,0)); red.putalpha(lock_img)
+    green = Image.new("RGBA",(w,h),(30,180,90,0)); green.putalpha(lock_img.point(lambda p: 220 if p>8 else 0))
     merged = Image.alpha_composite(base, green)
-    merged = Image.alpha_composite(merged, red)
     merged_path = d/"masks"/f"merged_v{ver}.png"
     merged.save(merged_path,"PNG")
 
@@ -307,6 +305,7 @@ def detect():
                merged_overlay=_serve_path(img_id, f"masks/merged_v{ver}.png"),
                depth_map=_serve_path(img_id, f"masks/depth_v{ver}.png"))
 
+
 @APP.post("/mask/commit")
 @require_quota
 @_measure
@@ -314,46 +313,53 @@ def mask_commit():
     if not _auth_required() and REQUIRE_JWT:
         return _bad("Unauthorized", 401)
     img_id = request.form.get("image_id")
-    if not img_id: return _bad("缺少 image_id")
+    if not img_id:
+        return _bad("缺少 image_id")
     d = _image_dir(img_id)
     raw = d/"original.png"
-    if not raw.exists(): return _bad("原始圖不存在",404)
+    if not raw.exists():
+        return _bad("原始圖不存在",404)
     w,h = Image.open(raw).size
 
+    # 版本管理
+    (d/"masks").mkdir(exist_ok=True)
     vfile = d/"masks"/"version.txt"
     ver = int(vfile.read_text())+1 if vfile.exists() else 1
     vfile.write_text(str(ver))
 
+    # 接受僅 lock_mask；若缺 editable 則以反相推算
     lock_f = request.files.get("lock_mask")
     editable_f = request.files.get("editable_mask")
-    if not editable_f: return _bad("缺少 editable_mask")
+    if not (lock_f or editable_f):
+        return _bad("缺少 lock_mask 或 editable_mask")
 
-    editable = _normalize_mask_L(Image.open(editable_f.stream), (w,h))
+    if editable_f:
+        editable = _normalize_mask_L(Image.open(editable_f.stream), (w,h))
+    else:
+        editable = None
+
     if lock_f:
         lock_img = _normalize_mask_L(Image.open(lock_f.stream), (w,h))
     else:
-        # derive lock from inverse editable for safety
         lock_img = ImageOps.invert(editable)
 
+    if editable is None:
+        editable = ImageOps.invert(lock_img)
+
+    # 儲存遮罩
     lock_path = d/"masks"/f"lock_v{ver}.png"
     editable_path = d/"masks"/f"editable_v{ver}.png"
-    lock_img.save(lock_path,"PNG"); editable.save(editable_path,"PNG")
+    lock_img.save(lock_path,"PNG")
+    editable.save(editable_path,"PNG")
 
+    # 合併預覽：僅以綠色高亮「鎖定區」
     base = Image.open(raw).convert("RGBA")
-    green = Image.new("RGBA",(w,h),(80,220,120,0)); green.putalpha(editable.point(lambda p:int(p*0.35)))
-    red   = Image.new("RGBA",(w,h),(239,68,68,0)); red.putalpha(lock_img.point(lambda p:int(p*0.45)))
-    merged = Image.alpha_composite(base, green); merged = Image.alpha_composite(merged, red)
+    green = Image.new("RGBA",(w,h),(30,180,90,0))
+    green.putalpha(lock_img.point(lambda p: 220 if p>8 else 0))
+    merged = Image.alpha_composite(base, green)
     merged.save(d/"masks"/f"merged_v{ver}.png","PNG")
 
     return _ok(mask_version=ver)
-
-def _choose_model():
-    if AB_WEIGHT_B <= 0.0 or MODEL_A == MODEL_B:
-        return MODEL_A
-    # hash per request/image to stable assign
-    key = request.json.get("image_id","") if request.is_json else str(time.time())
-    h = (sum(ord(c) for c in key) % 100) / 100.0
-    return MODEL_B if h < AB_WEIGHT_B else MODEL_A
 
 @APP.get("/compare")
 @_measure
@@ -657,11 +663,18 @@ def detect_v2():
             return str(Path(p).relative_to(d))
         except Exception:
             return str(p)
+    # 以 lock 產製一致的綠色合併預覽
+    lock_img = Image.open(out["lock_mask"]).convert("L")
+    base = Image.open(raw).convert("RGBA")
+    w,h = base.size
+    green = Image.new("RGBA",(w,h),(30,180,90,0)); green.putalpha(lock_img.point(lambda p: 220 if p>8 else 0))
+    merged = Image.alpha_composite(base, green)
+    merged.save(d/"masks"/f"merged_v{ver}.png","PNG")
     return _ok(
         mask_version=ver,
         lock_mask=_serve_path(img_id, rel(out["lock_mask"])),
         editable_mask=_serve_path(img_id, rel(out["editable_mask"])),
-        merged_overlay=_serve_path(img_id, rel(out["merged_overlay"])),
+        merged_overlay=_serve_path(img_id, f"masks/merged_v{ver}.png"),
         depth_map=_serve_path(img_id, rel(out["depth_map"])),
         layers_json=_serve_path(img_id, rel(out["layers_json"])),
         layers_count=out.get("layers_count")
