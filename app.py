@@ -342,6 +342,57 @@ def _choose_model():
     return MODEL_B if h < AB_WEIGHT_B else MODEL_A
 
 @APP.post("/generate")
+
+@APP.get("/compare")
+@_measure
+def compare_grid():
+    """
+    回傳四格比對牆所需的項目清單（原圖 + 指定變體們），皆為可直接顯示/下載的 URL。
+    Query:
+      - base:  image_id
+      - vars:  以逗號分隔的 result_id 清單（可 0~3 個）
+      - logo:  1/0，若為 1 則原圖會動態疊上 LOGO 輸出於 compare/ 資料夾
+    回傳：{ok, items:[{url, download_url}]}
+    """
+    img_id = request.args.get("base")
+    var_str = request.args.get("vars") or ""
+    want_logo = request.args.get("logo","1") in ("1","true","True")
+    if not img_id:
+        return _bad("缺少 base(image_id)")
+    d = _image_dir(img_id)
+    if not (d/"original.png").exists():
+        return _bad("找不到原圖", 404)
+
+    items = []
+    # 原圖處理（是否加 LOGO）
+    if want_logo:
+        (d/"compare").mkdir(exist_ok=True)
+        base_logo = d/"compare"/"original_logo.png"
+        if not base_logo.exists():
+            try:
+                add_logo(str(d/"original.png"), str(STATIC_DIR/"logo/LOGO.png"), str(base_logo))
+            except Exception:
+                # 若 LOGO 檔缺失，退回原圖
+                base_logo = d/"original.png"
+        base_url = f"/files/{img_id}/compare/{base_logo.name}" if base_logo.name != "original.png" else f"/files/{img_id}/original.png"
+    else:
+        base_url = f"/files/{img_id}/original.png"
+    items.append({"url": base_url, "download_url": base_url})
+
+    # 變體處理
+    rid_list = [x.strip() for x in var_str.split(",") if x.strip()]
+    rp = d/"results"
+    if rp.exists():
+        for rid in rid_list:
+            # 找最符合 rid_*.png
+            found = None
+            for p in rp.glob(f"{rid}_*.png"):
+                found = p; break
+            if found:
+                url = f"/files/{img_id}/results/{found.name}"
+                items.append({"url": url, "download_url": url})
+    return _ok(items=items)
+
 @require_quota
 @_measure
 def generate():
@@ -545,7 +596,13 @@ if __name__ == "__main__":
 
 
 
-from vision_detect import detect_structures  # GPT Vision v2
+# 嘗試載入 GPT Vision 偵測模組；若缺少檔案或相依，則以 HAS_VISION=False 回覆 501
+try:
+    from vision_detect import detect_structures as _detect_structures  # GPT Vision v2
+    HAS_VISION = True
+except Exception:
+    _detect_structures = None
+    HAS_VISION = False
 
 @APP.post("/detect/v2")
 @require_quota
@@ -558,7 +615,11 @@ def detect_v2():
     """
     if not _auth_required() and REQUIRE_JWT:
         return _bad("Unauthorized", 401)
-    data = request.get_json(silent=True) or {}
+            # 若未安裝 vision_detect，回 501，前端會自動回退到 /detect
+        if not HAS_VISION or _detect_structures is None:
+            return _bad("detect_v2 not available", 501)
+    data = request.get_json(silent=True) or {
+
     img_id = data.get("image_id")
     if not img_id: return _bad("缺少 image_id")
     d = _image_dir(img_id)
@@ -570,7 +631,7 @@ def detect_v2():
     ver = int(vfile.read_text())+1 if vfile.exists() else 1
     vfile.write_text(str(ver))
 
-    out = detect_structures(str(raw), str(d/"masks"), version=ver, model=os.getenv("VISION_MODEL_NAME","gpt-4o-mini"))
+    out = _detect_structures(str(raw), str(d/"masks"), version=ver, model=os.getenv("VISION_MODEL_NAME","gpt-4o-mini"))
     # Convert local paths to served URLs
     def rel(p): return str(Path(p).relative_to(d))
     return _ok(
