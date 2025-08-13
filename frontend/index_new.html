@@ -239,6 +239,7 @@ fileInput.addEventListener('change', async (e)=>{
   uploadStatus.textContent='上傳中…';
   try{
     const r = await fetch(BASE_URL+'/upload',{method:'POST',body:fd});
+    if(!r.ok){ const t=await r.text(); throw new Error('HTTP '+r.status+' '+t); }
     const d = await r.json();
     state.image={id:d.image_id,w:d.w,h:d.h,previewURL:pv.src};
     uploadStatus.textContent='已上傳 ✔';
