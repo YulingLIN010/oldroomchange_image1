@@ -386,8 +386,9 @@ def furniture():
     verb = {"add":"add furniture", "swap":"replace furniture", "recolor":"recolor objects"}.get(action,"edit")
     extra = f"{verb}: {obj} {color}".strip()
     base_style = info.get("style") or "modern"
-    prompt = prompt_templates.make_prompt(base_style, None) + "
-" + extra
+    prompt = prompt_templates.make_prompt(base_style, None)
+    if extra:
+        prompt += "\\n" + extra
 
     try:
         png_bytes = dalle_api.edit_image_with_mask(str(base_path), str(mask_path), prompt, size=os.getenv("IMAGE_SIZE","1024x1024"), transparent=False)
