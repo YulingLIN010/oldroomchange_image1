@@ -15,6 +15,10 @@
 <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@700;800;900&family=Noto+Sans+TC:wght@400;700;900&display=swap" rel="stylesheet">
 
 <style>
+/* cursor overlay helpers */
+.canvas-wrap{ position:relative; }
+.cursor-layer{ position:absolute; left:0; top:0; pointer-events:none; }
+
 :root{
   --pink:#ffd1dc; --mint:#c8f7dc; --lemon:#fff5cc; --sky:#bfe9ff; --ink:#333;
   --bg:#fff; --accent:#ff8fb1; --brand:#ff7aa2; --green:#1ebe6b;
@@ -109,6 +113,7 @@ const state = {
     </div>
     <div class="canvas-wrap">
       <canvas id="editCanvas" class="preview" height="0"></canvas>
+      <canvas id="editCursor" class="cursor-layer" height="0"></canvas>
       <div class="legend">綠色＝鎖定不可變動</div>
     </div>
   </div>
@@ -152,17 +157,27 @@ const state = {
     <div class="c-title"><span class="b">⑦</span> 家具編修（選定後）</div>
     <div class="help">請先在上一步<b>點選一張喜歡的風格圖</b>。再於下方畫出需要編修的區域，選擇新增/替換/改色後送出。</div>
     <div class="toolbar">
-      <select id="fAction" class="tool">
-        <option value="add">新增</option>
-        <option value="swap">更換</option>
-        <option value="recolor">改色</option>
-      </select>
+      <div class="seg" id="fActionSeg">
+        <button data-act="add" class="active">新增</button>
+        <button data-act="swap">更換</button>
+        <button data-act="recolor">改色</button>
+      </div>
       <input id="fObject" class="tool" placeholder="家具描述或名稱（例：modern sofa）"/>
       <span class="pill">顏色 <input id="fColor" type="color" value="#cc9966" class="color-chip"/></span>
       <button id="btnFRect" class="tool">🟦 矩形框選</button>
       <button id="btnFMaskClear" class="tool">🧼 清空選區</button>
       <button id="btnFurniture" class="btn" disabled>🛋️ 套用家具</button>
     </div>
+    <div class="small chips" id="fQuick" style="margin-top:6px">
+      <span class="chip" data-obj="現代風 沙發">沙發</span>
+      <span class="chip" data-obj="固定式 電視櫃">電視櫃</span>
+      <span class="chip" data-obj="茶几">茶几</span>
+      <span class="chip" data-obj="地毯">地毯</span>
+      <span class="chip" data-obj="落地燈">落地燈</span>
+      <span class="chip" data-obj="收納展示櫃">展示櫃</span>
+      <span class="chip" data-obj="藝術掛畫">掛畫</span>
+    </div>
+
     <div class="canvas-wrap" style="margin-top:8px">
       <canvas id="fbaseCanvas" class="preview" height="0"></canvas>
       <canvas id="fmaskCanvas" height="0"></canvas>
@@ -310,7 +325,47 @@ const editCanvas = $('#editCanvas');
 let drawing=false, last=null; 
 editCanvas.addEventListener('mousedown', (e)=>{ drawing=true; last=pos(editCanvas,e); pushLockHistory(); drawDot(last.x,last.y); });
 window.addEventListener('mouseup', ()=>{ drawing=false; });
-editCanvas.addEventListener('mousemove', (e)=>{ if(!drawing) return; const p=pos(editCanvas,e); drawLine(last,p); last=p; });
+editCanvas.addEventListener('mousemove', (e)=>{ if(!drawing) return; const p=pos(editCanvas,e);
+// === Brush/Eraser cursor overlay ===
+const editCursor = $('#editCursor');
+(function setupEditCursor(){
+  if(!editCursor) return;
+  const resizeCursor=()=>{ editCursor.width=editCanvas.width; editCursor.height=editCanvas.height; };
+  resizeCursor();
+  const cctx = editCursor.getContext('2d');
+  let lastPointer=null;
+  function renderCursor(pt){
+    if(!pt) return;
+    cctx.clearRect(0,0,editCursor.width,editCursor.height);
+    const r = (+$('#brush').value)/2;
+    cctx.beginPath(); cctx.arc(pt.x, pt.y, r, 0, Math.PI*2);
+    cctx.lineWidth = 2;
+    if(drawMode==='erase'){
+      cctx.strokeStyle='rgba(255,120,0,0.95)'; // 橡皮擦：橘色圓環＋叉叉
+      cctx.stroke();
+      cctx.beginPath();
+      cctx.moveTo(pt.x - r*0.7, pt.y - r*0.7); cctx.lineTo(pt.x + r*0.7, pt.y + r*0.7);
+      cctx.moveTo(pt.x + r*0.7, pt.y - r*0.7); cctx.lineTo(pt.x - r*0.7, pt.y + r*0.7);
+      cctx.stroke();
+    }else{
+      cctx.strokeStyle='rgba(30,190,107,0.95)'; // 繪製：綠色圓環
+      cctx.stroke();
+    }
+  }
+  function onMove(e){ const p = pos(editCanvas,e); lastPointer=p; renderCursor(p); }
+  function onLeave(){ cctx.clearRect(0,0,editCursor.width,editCursor.height); }
+  editCanvas.style.cursor='none';
+  editCanvas.addEventListener('mousemove', onMove);
+  editCanvas.addEventListener('mouseleave', onLeave);
+  $('#brush').addEventListener('input', ()=>{ if(lastPointer) renderCursor(lastPointer); });
+  $('#toolDraw').addEventListener('click', ()=>{ if(lastPointer) renderCursor(lastPointer); });
+  $('#toolErase').addEventListener('click', ()=>{ if(lastPointer) renderCursor(lastPointer); });
+  editCanvas.addEventListener('touchstart', (e)=>{ if(!e.touches.length) return; const t=e.touches[0]; const fake={clientX:t.clientX, clientY:t.clientY}; onMove(fake); }, {passive:true});
+  editCanvas.addEventListener('touchmove', (e)=>{ if(!e.touches.length) return; const t=e.touches[0]; const fake={clientX:t.clientX, clientY:t.clientY}; onMove(fake); }, {passive:true});
+  editCanvas.addEventListener('touchend', onLeave, {passive:true});
+  window.addEventListener('resize', resizeCursor);
+})();
+ drawLine(last,p); last=p; });
 
 function pos(cv, e){ const r=cv.getBoundingClientRect(); return {x:Math.round((e.clientX-r.left)*cv.width/r.width), y:Math.round((e.clientY-r.top)*cv.height/r.height)} }
 function drawDot(x,y){ drawLine({x,y},{x:x+.1,y:y+.1}); }
@@ -454,7 +509,20 @@ async function renderCompare(){
 
 /* ===== 7) 家具編修：矩形選區 → /furniture ===== */
 const fbase = $('#fbaseCanvas'), fmk = $('#fmaskCanvas');
-$('#btnFRect').onclick=()=>{ state.fRectSel = !state.fRectSel; fmk.style.pointerEvents = state.fRectSel ? 'auto' : 'none'; };
+$('#btnFRect').onclick=()=>{ state.fRectSel = !state.fRectSel; 
+// segmented actions
+$('#fActionSeg')?.addEventListener('click',(e)=>{
+  const btn=e.target.closest('button'); if(!btn) return;
+  $$('#fActionSeg button').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  $('#fActionSeg').dataset.act = btn.dataset.act;
+});
+// quick chips
+$('#fQuick')?.addEventListener('click',(e)=>{
+  const c=e.target.closest('.chip'); if(!c) return;
+  $('#fObject').value = c.dataset.obj || '';
+});
+fmk.style.pointerEvents = state.fRectSel ? 'auto' : 'none'; };
 $('#btnFMaskClear').onclick=()=>{ const c=state.fmask.getContext('2d'); c.clearRect(0,0,state.fmask.width,state.fmask.height); fmk.getContext('2d').clearRect(0,0,fmk.width,fmk.height); };
 
 function pos(cv, e){ const r=cv.getBoundingClientRect(); return {x:Math.round((e.clientX-r.left)*cv.width/r.width), y:Math.round((e.clientY-r.top)*cv.height/r.height)} }
@@ -480,7 +548,7 @@ $('#btnFurniture').onclick=async()=>{
   const any = state.fmask.getContext('2d').getImageData(0,0,state.fmask.width,state.fmask.height).data.some(v=>v!==0);
   if(!any){ const mctx=state.fmask.getContext('2d'); mctx.fillStyle='#fff'; mctx.fillRect(0,0,state.fmask.width,state.fmask.height); }
   const maskURL = state.fmask.toDataURL('image/png');
-  const payload = { image_id:state.image.id, result_id:state.selectedResultId, action:$('#fAction').value, object:$('#fObject').value, color:$('#fColor').value, mask_data_url:maskURL };
+  const payload = { image_id:state.image.id, result_id:state.selectedResultId, action:($('#fActionSeg').dataset.act||'add'), object:$('#fObject').value, color:$('#fColor').value, mask_data_url:maskURL };
   try{
     const _f=await fetch(BASE_URL+'/furniture',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
     if(!_f.ok){ const t=await _f.text(); throw new Error('家具操作失敗：HTTP '+_f.status+' '+t); }
