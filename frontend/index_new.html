@@ -46,6 +46,8 @@ hr.c{border:none; height:1px; background:linear-gradient(90deg,#0000,#0002,#0000
 #editCanvas, #fmaskCanvas{border-radius:12px; border:2px solid #f0f0f0; box-shadow:var(--shadow)}
 #fmaskCanvas{position:absolute; left:0; top:0; pointer-events:none}
 .legend{position:absolute; left:10px; top:10px; background:#0009; color:#fff; padding:4px 8px; border-radius:8px; font-weight:800}
+.half{width:50% !important}
+.cursor-layer{position:absolute;left:0;top:0;pointer-events:none}
 </style>
 
 <script>
@@ -80,7 +82,7 @@ const state = {
       <label class="tool">📷 選擇檔案 <input id="file" type="file" accept="image/png,image/jpeg" style="display:none"></label>
       <span id="uploadStatus" class="badge">尚未上傳</span>
     </div>
-    <img id="preview" class="preview" alt="預覽將顯示於此">
+    <img id="preview" class="preview half" alt="預覽將顯示於此">
   </div>
 
   <!-- ② 偵測：優先呼叫 /detect/v2（GPT Vision 多邊形分層），失敗才退回 /detect（OpenCV/安全預設） -->
@@ -92,7 +94,7 @@ const state = {
     </div>
     <hr class="c">
     <div class="help">完成後會出現 <b>合併遮罩</b> 與「鎖定結構（綠＝不可更改）」圖層預覽，下一步進入「手繪修正」。</div>
-    <img id="merged" class="preview hidden" alt="合併遮罩預覽">
+    <img id="merged" class="preview hidden half" alt="合併遮罩預覽">
   </div>
 
   <!-- ③ 手繪修正：僅維護「不可變動結構」的鎖定遮罩（綠）；提供畫筆、橡皮擦、復原；提交時只傳 lock_mask -->
@@ -108,7 +110,8 @@ const state = {
       <span id="maskBadge" class="badge">未提交</span>
     </div>
     <div class="canvas-wrap">
-      <canvas id="editCanvas" class="preview" height="0"></canvas>
+      <canvas id="editCanvas" class="preview half" height="0"></canvas>
+      <canvas id="editCursor" class="cursor-layer preview half" height="0"></canvas>
       <div class="legend">綠色＝鎖定不可變動</div>
     </div>
   </div>
@@ -152,21 +155,27 @@ const state = {
     <div class="c-title"><span class="b">⑦</span> 家具編修（選定後）</div>
     <div class="help">請先在上一步<b>點選一張喜歡的風格圖</b>。再於下方畫出需要編修的區域，選擇新增/替換/改色後送出。</div>
     <div class="toolbar">
-      <select id="fAction" class="tool">
-        <option value="add">新增</option>
-        <option value="swap">更換</option>
-        <option value="recolor">改色</option>
-      </select>
-      <input id="fObject" class="tool" placeholder="家具描述或名稱（例：modern sofa）"/>
+      <div class="seg" id="fActionSeg">
+        <button data-act="add" class="active">新增</button>
+        <button data-act="swap">更換</button>
+        <button data-act="recolor">改色</button>
+        <button data-act="remove">刪除</button>
+      </div>
+      <input id="fName" class="tool" placeholder="傢俱名稱（例：sofa / TV cabinet）"/>
+      <input id="fLoc" class="tool" placeholder="擺放位置（例：靠窗、電視牆左側）"/>
+      <input id="fStyle" class="tool" placeholder="風格（例：現代風）"/>
       <span class="pill">顏色 <input id="fColor" type="color" value="#cc9966" class="color-chip"/></span>
+      <label class="tool">筆刷<input id="fBrush" type="range" min="6" max="60" value="22" style="vertical-align:middle"></label>
+      <button id="btnFDraw" class="tool">🖌️ 畫筆選區</button>
+      <button id="btnFErase" class="tool">🧽 擦除選區</button>
       <button id="btnFRect" class="tool">🟦 矩形框選</button>
       <button id="btnFMaskClear" class="tool">🧼 清空選區</button>
       <button id="btnFurniture" class="btn" disabled>🛋️ 套用家具</button>
     </div>
     <div class="canvas-wrap" style="margin-top:8px">
-      <canvas id="fbaseCanvas" class="preview" height="0"></canvas>
+      <canvas id="fbaseCanvas" class="preview half" height="0"></canvas>
       <canvas id="fmaskCanvas" height="0"></canvas>
-      <div class="legend">白色選區＝家具編修範圍</div>
+      <div class="legend">黑色選區＝家具編修範圍（白＝鎖定）</div>
     </div>
     <div id="fResult" class="grid-3" style="margin-top:10px"></div>
   </div>
@@ -199,6 +208,20 @@ function toBlob(c){ return new Promise(r=>c.toBlob(r,'image/png')); }
   }
   renderStyleList();
 })();
+async function forceDownload(url, filename){
+  try{
+    const r = await fetch(ABS(url), {credentials:'omit'});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const b = await r.blob();
+    const a = document.createElement('a');
+    const obj = URL.createObjectURL(b);
+    a.href = obj; a.download = filename || ('download_'+Date.now()+'.png');
+    a.click();
+    URL.revokeObjectURL(obj);
+  }catch(e){
+    const a = document.createElement('a'); a.href = ABS(url); a.target='_blank'; a.click();
+  }
+}
 function renderStyleList(){
   const box = $('#styleList'); box.innerHTML='';
   state.styles.forEach(s=>{
@@ -252,6 +275,9 @@ fileInput.addEventListener('change', async (e)=>{
 });
 
 async function initEditCanvas(){
+  // 游標覆蓋層與主畫布尺寸同步
+  const cur = $('#editCursor'); if(cur){ cur.width = $('#editCanvas').width; cur.height = $('#editCanvas').height; }
+
   const base = await loadImage(state.image.previewURL);
   const cv = $('#editCanvas'); cv.width=base.width; cv.height=base.height;
   const ctx = cv.getContext('2d'); ctx.drawImage(base,0,0,cv.width,cv.height);
@@ -264,7 +290,7 @@ async function initFurnitureCanvas(){
   const cv = $('#fbaseCanvas'); const mk = $('#fmaskCanvas');
   cv.width=base.width; cv.height=base.height; mk.width=base.width; mk.height=base.height;
   cv.getContext('2d').drawImage(base,0,0,cv.width,cv.height);
-  state.fmask = document.createElement('canvas'); state.fmask.width=mk.width; state.fmask.height=mk.height;
+  state.fmask = document.createElement('canvas'); state.fmask.width=mk.width; state.fmask.height=mk.height; const _fmctx=state.fmask.getContext('2d'); _fmctx.fillStyle='#fff'; _fmctx.fillRect(0,0,state.fmask.width,state.fmask.height);
 }
 
 /* ===== 2) 偵測（v2 -> v1 回退） ===== */
@@ -312,6 +338,17 @@ editCanvas.addEventListener('mousedown', (e)=>{ drawing=true; last=pos(editCanva
 window.addEventListener('mouseup', ()=>{ drawing=false; });
 editCanvas.addEventListener('mousemove', (e)=>{ if(!drawing) return; const p=pos(editCanvas,e); drawLine(last,p); last=p; });
 
+function setActionSeg(){
+  const seg=$('#fActionSeg'); if(!seg) return;
+  seg.dataset.act = seg.querySelector('.active')?.dataset.act || 'add';
+  seg.querySelectorAll('button').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      seg.querySelectorAll('button').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active'); seg.dataset.act=b.dataset.act;
+    });
+  });
+}
+setActionSeg();
 function pos(cv, e){ const r=cv.getBoundingClientRect(); return {x:Math.round((e.clientX-r.left)*cv.width/r.width), y:Math.round((e.clientY-r.top)*cv.height/r.height)} }
 function drawDot(x,y){ drawLine({x,y},{x:x+.1,y:y+.1}); }
 function drawLine(a,b){
@@ -368,28 +405,42 @@ $('#btnCommitMask').onclick=async()=>{
   }catch{ $('#maskBadge').textContent='失敗'; alert('提交失敗'); }
 };
 
-/* ===== 5) 生成變體 ===== */
+
+/* ===== 5) 生成變體（逐張串行，立即顯示；每張只送一種風格避免混風格） ===== */
 $('#btnGenerate').onclick = async ()=>{
   if(!state.image) return alert('請先上傳');
   if(!state.maskVersion) return alert('請先完成偵測與遮罩提交');
   if(state.selectedStyles.size===0) return alert('請至少選 1 種風格');
-  $('#genBadge').textContent='生成中…';
-  const body = {
-    image_id: state.image.id,
-    mask_version: state.maskVersion,
-    styles: [...state.selectedStyles],
-    palette: { main: state.palette.main, accents: state.palette.accents },
-    logo: true
-  };
-  try{
-    const r=await fetch(BASE_URL+'/generate',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
-    if(!r.ok){ const t=await r.text(); throw new Error('生成失敗：HTTP '+r.status+' '+t); }
-    const d=await r.json();
-    state.variants = d.variants||[]; renderVariants(); $('#genBadge').textContent='完成 ✔';
-    renderCompare();
-    // 初始化 7: 家具編修底圖（顯示所選圖）
-    if(state.variants[0]){ await initFurnitureCanvas(); }
-  }catch{ alert('生成失敗'); $('#genBadge').textContent='失敗'; }
+  $('#genBadge').textContent='生成中…（逐張輸出）';
+
+  // 清空既有結果
+  state.variants = []; renderVariants(); renderCompare();
+
+  const styles = [...state.selectedStyles];
+  for (let i=0; i<styles.length; i++){
+    const st = styles[i];
+    const body = {
+      image_id: state.image.id,
+      mask_version: state.maskVersion,
+      styles: [st], // 只送一種，避免混風格
+      palette: { main: state.palette.main, accents: state.palette.accents },
+      logo: true
+    };
+    try{
+      const r=await fetch(BASE_URL+'/generate',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+      if(!r.ok){ const t=await r.text(); throw new Error('HTTP '+r.status+' '+t); }
+      const d=await r.json();
+      const got = d.variants||[];
+      state.variants.push(...got);
+      renderVariants(); renderCompare();
+      if(!state.selectedResultId && state.variants[0]){ await initFurnitureCanvas(); }
+      $('#genBadge').textContent=`已完成 ${i+1}/${styles.length} 張`;
+    }catch(err){
+      console.error(err);
+      alert(`生成「${st}」失敗：`+err.message);
+    }
+  }
+  $('#genBadge').textContent='完成 ✔';
 };
 
 function renderVariants(){
@@ -398,7 +449,7 @@ function renderVariants(){
     const card=document.createElement('div'); card.className='c-card';
     card.innerHTML = `<div class="card-img">
         <img src="${ABS(v.url)}" class="preview" alt="${v.style}">
-        <a class="dl" href="${ABS(v.download_url||v.url)}" download>⬇︎</a>
+        <a class="dl" href="#" onclick="forceDownload(ABS(v.download_url||v.url), `style_${(v.style||\'result\')}.png`); return false;">⬇︎ 下載</a>
       </div>
       <div class="toolbar" style="margin-top:8px">
         <button class="btn choose">✅ 選擇此圖</button>
@@ -430,19 +481,93 @@ async function renderCompare(){
   try{
     const r=await fetch(`${BASE_URL}/compare?base=${state.image.id}&vars=${varIds}&logo=1`);
     const d=await r.json();
-    (d.items||[]).forEach(it=>{
+    (d.items||[]).forEach((it, idx)=>{
       const cell=document.createElement('div'); cell.className='c-card card-img';
-      cell.innerHTML=`<img src="${ABS(it.url)}" class="preview"><a class="dl" href="${ABS(it.download_url||it.url)}" download>⬇︎</a>`;
+      const href=ABS(it.download_url||it.url);
+      let styleTxt=''; let chooseHTML='';
+      if(idx>0){
+        const v = (state.variants||[])[idx-1];
+        styleTxt = v ? (v.style||'') : '';
+        if(v){
+          chooseHTML = `<div class="toolbar" style="margin-top:6px">
+            <button class="btn choose" data-rid="${v.result_id}">✅ 選擇此圖</button>
+            <span class="badge">style: ${styleTxt}</span>
+          </div>`;
+        }
+      }
+      cell.innerHTML=`<img src="${ABS(it.url)}" class="preview half">
+        <a class="dl" href="#" onclick="forceDownload('${href}', 'compare_${idx}.png'); return false;">⬇︎ 下載</a>
+        ${chooseHTML}`;
+      if(idx>0){
+        const btn = cell.querySelector('.choose');
+        btn?.addEventListener('click', async ()=>{
+          const rid=btn.getAttribute('data-rid');
+          try{
+            const _sel=await fetch(BASE_URL+'/select',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({image_id:state.image.id, result_id:rid})});
+            if(!_sel.ok){ const t=await _sel.text(); throw new Error('選擇失敗：HTTP '+_sel.status+' '+t); }
+            state.selectedResultId=rid; $('#btnFurniture').disabled=false;
+            const v=(state.variants||[]).find(x=>x.result_id===rid);
+            if(v){
+              const base = await loadImage(ABS(v.url));
+              const cv = $('#fbaseCanvas'); const mk = $('#fmaskCanvas');
+              cv.width=base.width; cv.height=base.height; mk.width=base.width; mk.height=base.height;
+              cv.getContext('2d').drawImage(base,0,0,cv.width,cv.height);
+              state.fmask = document.createElement('canvas'); state.fmask.width=cv.width; state.fmask.height=cv.height;
+              const _fmctx=state.fmask.getContext('2d'); _fmctx.fillStyle='#fff'; _fmctx.fillRect(0,0,cv.width,cv.height);
+              mk.getContext('2d').clearRect(0,0,mk.width,mk.height);
+            }
+          }catch(err){ alert(err.message); }
+        });
+      }
       box.appendChild(cell);
     });
   }catch{ /* 靜默失敗 */ }
 }
+}
 
 /* ===== 7) 家具編修：矩形選區 → /furniture ===== */
 const fbase = $('#fbaseCanvas'), fmk = $('#fmaskCanvas');
+
+// ---- 家具：畫筆式圈選 ----
+let fMode='draw'; // draw=黑(可編修)、erase=白(鎖定)
+$('#btnFDraw')?.addEventListener('click', ()=>{ fMode='draw'; });
+$('#btnFErase')?.addEventListener('click', ()=>{ fMode='erase'; });
+function fpos(cv, e){ const r=cv.getBoundingClientRect(); return {x:Math.round((e.clientX-r.left)*cv.width/r.width), y:Math.round((e.clientY-r.top)*cv.height/r.height)} }
+function fdrawLine(a,b){
+  const cx = state.fmask.getContext('2d');
+  cx.lineCap='round'; cx.lineJoin='round';
+  cx.lineWidth = +($('#fBrush')?.value||22);
+  cx.strokeStyle = (fMode==='draw') ? '#000' : '#fff'; // 黑=可編修；白=鎖定
+  cx.globalCompositeOperation = 'source-over';
+  cx.beginPath(); cx.moveTo(a.x,a.y); cx.lineTo(b.x,b.y); cx.stroke();
+  const v = $('#fmaskCanvas').getContext('2d'); v.clearRect(0,0,$('#fmaskCanvas').width,$('#fmaskCanvas').height);
+  v.globalAlpha = 0.45; v.drawImage(state.fmask,0,0); v.globalAlpha=1.0;
+}
+(function attachFurnitureBrush(){
+  const mk = $('#fmaskCanvas');
+  let drawing=false, last=null;
+  mk.addEventListener('mousedown', (e)=>{ if(state.fRectSel) return; drawing=true; last=fpos(mk,e); fdrawLine(last,last); });
+  window.addEventListener('mouseup', ()=>{ drawing=false; });
+  mk.addEventListener('mousemove', (e)=>{ if(!drawing) return; const p=fpos(mk,e); fdrawLine(last,p); last=p; });
+  mk.addEventListener('touchstart', (e)=>{ if(state.fRectSel) return; if(!e.touches.length) return; const t=e.touches[0]; drawing=true; last=fpos(mk,{clientX:t.clientX,clientY:t.clientY}); fdrawLine(last,last); }, {passive:true});
+  mk.addEventListener('touchmove', (e)=>{ if(!drawing||!e.touches.length) return; const t=e.touches[0]; const p=fpos(mk,{clientX:t.clientX,clientY:t.clientY}); fdrawLine(last,p); last=p; }, {passive:true});
+  mk.addEventListener('touchend', ()=>{ drawing=false; }, {passive:true});
+})();
+
 $('#btnFRect').onclick=()=>{ state.fRectSel = !state.fRectSel; fmk.style.pointerEvents = state.fRectSel ? 'auto' : 'none'; };
 $('#btnFMaskClear').onclick=()=>{ const c=state.fmask.getContext('2d'); c.clearRect(0,0,state.fmask.width,state.fmask.height); fmk.getContext('2d').clearRect(0,0,fmk.width,fmk.height); };
 
+function setActionSeg(){
+  const seg=$('#fActionSeg'); if(!seg) return;
+  seg.dataset.act = seg.querySelector('.active')?.dataset.act || 'add';
+  seg.querySelectorAll('button').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      seg.querySelectorAll('button').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active'); seg.dataset.act=b.dataset.act;
+    });
+  });
+}
+setActionSeg();
 function pos(cv, e){ const r=cv.getBoundingClientRect(); return {x:Math.round((e.clientX-r.left)*cv.width/r.width), y:Math.round((e.clientY-r.top)*cv.height/r.height)} }
 let rectStart=null;
 fmk.addEventListener('mousedown', (e)=>{
@@ -455,8 +580,8 @@ window.addEventListener('mouseup', (e)=>{
   const x=Math.min(rectStart.x,p.x), y=Math.min(rectStart.y,p.y), w=Math.abs(p.x-rectStart.x), h=Math.abs(p.y-rectStart.y);
   // 視覺層：畫框
   const vctx = fmk.getContext('2d'); vctx.strokeStyle='#fff'; vctx.lineWidth=2; vctx.setLineDash([8,6]); vctx.strokeRect(x,y,w,h);
-  // mask 層（白=有效）
-  const mctx = state.fmask.getContext('2d'); mctx.fillStyle='#fff'; mctx.fillRect(x,y,w,h);
+  // mask 層（黑=可編修；白=鎖定）
+  const mctx = state.fmask.getContext('2d'); mctx.fillStyle='#000'; mctx.fillRect(x,y,w,h);
   rectStart=null; state.fRectSel=false; fmk.style.pointerEvents='none';
 });
 
@@ -466,7 +591,17 @@ $('#btnFurniture').onclick=async()=>{
   const any = state.fmask.getContext('2d').getImageData(0,0,state.fmask.width,state.fmask.height).data.some(v=>v!==0);
   if(!any){ const mctx=state.fmask.getContext('2d'); mctx.fillStyle='#fff'; mctx.fillRect(0,0,state.fmask.width,state.fmask.height); }
   const maskURL = state.fmask.toDataURL('image/png');
-  const payload = { image_id:state.image.id, result_id:state.selectedResultId, action:$('#fAction').value, object:$('#fObject').value, color:$('#fColor').value, mask_data_url:maskURL };
+  const payload = { 
+      image_id:state.image.id, 
+      result_id:state.selectedResultId, 
+      action:($('#fActionSeg')?.dataset.act||'add'), 
+      object:($('#fName')?$('#fName').value:''), 
+      color:$('#fColor')?$('#fColor').value:'#cc9966', 
+      name:($('#fName')?$('#fName').value:''), 
+      location:($('#fLoc')?$('#fLoc').value:''), 
+      style_hint:($('#fStyle')?$('#fStyle').value:''), 
+      mask_data_url:maskURL 
+    };
   try{
     const _f=await fetch(BASE_URL+'/furniture',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
     if(!_f.ok){ const t=await _f.text(); throw new Error('家具操作失敗：HTTP '+_f.status+' '+t); }

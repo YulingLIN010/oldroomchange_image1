@@ -337,6 +337,9 @@ def furniture():
     action = (data.get("action") or "add").lower()
     obj = data.get("object") or ""
     color = data.get("color") or ""
+    name = data.get("name") or ""
+    location = data.get("location") or ""
+    style_hint = data.get("style_hint") or ""
     data_url = data.get("mask_data_url")
     if not image_id or not result_id:
         return _bad("missing image_id or result_id")
@@ -383,8 +386,12 @@ def furniture():
         rgba.putalpha(a)
         rgba.save(mask_path)
 
-    verb = {"add":"add furniture", "swap":"replace furniture", "recolor":"recolor objects"}.get(action,"edit")
-    extra = f"{verb}: {obj} {color}".strip()
+    verb = {"add":"add furniture", "swap":"replace furniture", "recolor":"recolor objects", "remove":"remove furniture and reconstruct background"}.get(action,"edit")
+    extra = f"{verb}: {name or obj} {color}".strip()
+    if location:
+        extra += f"; placement: {location}"
+    if style_hint:
+        extra += f"; furniture style: {style_hint}"
     base_style = info.get("style") or "modern"
     prompt = prompt_templates.make_prompt(base_style, None)
     if extra:

@@ -146,6 +146,7 @@ def build_style_prompt(style_name: str, colors: dict=None, enforce_hard_rules: b
         *style_core,
         (colors_text or ""),
         "輸出要求：高真實度材質、正確光影、自然陰影、乾淨收納、避免雜亂與重複圖樣。",
+        "Color application rules: Apply the Primary color prominently on large surfaces (e.g., walls, fixed cabinetry, feature ceiling) and use Accent colors for soft furnishings, decor, and lighting trims. Maintain palette fidelity; avoid introducing unrelated hues.",
     ]
     segments = [s for s in segments if s]
     if hard_rules:
