@@ -326,6 +326,7 @@ def compare():
     return _ok(items=items)
 
 # ---------------- 8) furniture ----------------
+
 @APP.post("/furniture")
 def furniture():
     if dalle_api is None or prompt_templates is None:
@@ -350,23 +351,43 @@ def furniture():
     mask_path = out_dir / "tmp_furn_mask.png"
 
     if data_url:
-        _data_url_to_png(data_url, mask_path)
-        # 前端白=選區；OpenAI 規則 alpha=0 可編輯 → 反相
-        m = Image.open(mask_path).convert("L")
-        inv = ImageOps.invert(m)
-        rgba = Image.new("RGBA", m.size, (0,0,0,0))
-        rgba.putalpha(inv)  # 白(255)->alpha=0
+        # 統一最終語意：白=鎖定（alpha=255）、黑=可編輯（alpha=0）
+        head, b64 = data_url.split(",", 1)
+        import base64 as _b64
+        raw = _b64.b64decode(b64)
+        with open(mask_path, "wb") as f:
+            f.write(raw)
+        from PIL import Image as _I
+        m = _I.open(mask_path).convert("L")
+        # 自動相容：若白像素比例 < 50%（推測舊版白=選區），則反向處理
+        hist = m.histogram()
+        white_cnt = sum(hist[128:])
+        total = m.size[0] * m.size[1]
+        white_ratio = white_cnt / max(1,total)
+        rgba = _I.new("RGBA", m.size, (0,0,0,0))
+        if white_ratio < 0.5:
+            # 舊語意（白=選區）→ 白區可編輯(alpha=0)，其他鎖定(alpha=255)
+            a = m.point(lambda v: 0 if v>127 else 255)
+        else:
+            # 新語意（白=鎖定）→ 白區鎖定(alpha=255)，黑區可編輯(alpha=0)
+            a = m.point(lambda v: 255 if v>127 else 0)
+        rgba.putalpha(a)
         rgba.save(mask_path)
     else:
-        m = Image.new("L", Image.open(base_path).size, 0)  # 全可編輯
-        rgba = Image.new("RGBA", m.size, (0,0,0,0))
-        rgba.putalpha(m)
+        # 未提供選區 → 預設全白（全鎖定，避免誤改）
+        from PIL import Image as _I
+        with _I.open(base_path) as _im:
+            w,h = _im.size
+        rgba = _I.new("RGBA", (w,h), (0,0,0,0))
+        a = _I.new("L", (w,h), 255)  # 255=保留（鎖定）
+        rgba.putalpha(a)
         rgba.save(mask_path)
 
     verb = {"add":"add furniture", "swap":"replace furniture", "recolor":"recolor objects"}.get(action,"edit")
     extra = f"{verb}: {obj} {color}".strip()
     base_style = info.get("style") or "modern"
-    prompt = prompt_templates.make_prompt(base_style, None) + "\n" + extra
+    prompt = prompt_templates.make_prompt(base_style, None) + "
+" + extra
 
     try:
         png_bytes = dalle_api.edit_image_with_mask(str(base_path), str(mask_path), prompt, size=os.getenv("IMAGE_SIZE","1024x1024"), transparent=False)

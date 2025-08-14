@@ -49,6 +49,8 @@ hr.c{border:none; height:1px; background:linear-gradient(90deg,#0000,#0002,#0000
 </style>
 
 <script>
+const FALLBACK_STYLES = [{"code": "北歐風", "name": "北歐風", "brief": "簡約線條、自然採光、功能導向"}, {"code": "現代風", "name": "現代風", "brief": "幾何分明、極簡收納、玻璃金屬感"}, {"code": "工業風", "name": "工業風", "brief": "外露結構、粗獷材質、深色調"}, {"code": "美式鄉村風", "name": "美式鄉村風", "brief": "溫馨木作、經典線板、復古細節"}, {"code": "日式侘寂風", "name": "日式侘寂風", "brief": "留白、自然材質、不對稱美"}, {"code": "日式禪風", "name": "日式禪風", "brief": "對稱、自然光、簡淨材質"}, {"code": "地中海風", "name": "地中海風", "brief": "拱門、白牆、藍白對比"}, {"code": "輕奢古典風", "name": "輕奢古典風", "brief": "線板造型、金屬點綴、高雅材質"}, {"code": "混搭風", "name": "混搭風", "brief": "多種風格融合、創意布局"}, {"code": "鄉村風", "name": "鄉村風", "brief": "粗獷木質、溫暖色調"}, {"code": "極簡風", "name": "極簡風", "brief": "空間留白、極簡家具"}, {"code": "現代奢華風", "name": "現代奢華風", "brief": "高級材質、大膽色彩"}, {"code": "藝術復古風", "name": "藝術復古風", "brief": "藝術感強烈、古典家具"}];
+
 // 後端 API 入口：可用 window.API_BASE 覆寫，預設為 Render 網址
 const BASE_URL = (window.API_BASE||'https://oldroomchange-image3.onrender.com');
 /* 把後端回傳的相對路徑（/files/...）轉為絕對網址，避免在 Strikingly 網域下無法顯示 */
@@ -164,7 +166,7 @@ const state = {
     <div class="canvas-wrap" style="margin-top:8px">
       <canvas id="fbaseCanvas" class="preview" height="0"></canvas>
       <canvas id="fmaskCanvas" height="0"></canvas>
-      <div class="legend">白色選區＝家具編修範圍</div>
+      <div class="legend">黑色選區＝家具編修範圍（白＝鎖定）</div>
     </div>
     <div id="fResult" class="grid-3" style="margin-top:10px"></div>
   </div>
@@ -189,9 +191,10 @@ function toBlob(c){ return new Promise(r=>c.toBlob(r,'image/png')); }
 (async function loadMeta(){
   try{
     const r=await fetch(BASE_URL+'/meta/styles'); const d=await r.json();
-    state.styles = d.styles||[]; state.kbVersion = d.kb_version||'kb';
+    state.styles = (Array.isArray(d.styles) && d.styles.length? d.styles : FALLBACK_STYLES);
+    state.kbVersion = d.kb_version||'kb';
   }catch{
-    state.styles = [{code:'現代風',name:'現代風',brief:'線條簡潔、材質純淨'}];
+    state.styles = FALLBACK_STYLES;
     state.kbVersion = 'kb-local';
   }
   renderStyleList();
@@ -236,6 +239,7 @@ fileInput.addEventListener('change', async (e)=>{
   uploadStatus.textContent='上傳中…';
   try{
     const r = await fetch(BASE_URL+'/upload',{method:'POST',body:fd});
+    if(!r.ok){ const t=await r.text(); throw new Error('HTTP '+r.status+' '+t); }
     const d = await r.json();
     state.image={id:d.image_id,w:d.w,h:d.h,previewURL:pv.src};
     uploadStatus.textContent='已上傳 ✔';
@@ -260,7 +264,7 @@ async function initFurnitureCanvas(){
   const cv = $('#fbaseCanvas'); const mk = $('#fmaskCanvas');
   cv.width=base.width; cv.height=base.height; mk.width=base.width; mk.height=base.height;
   cv.getContext('2d').drawImage(base,0,0,cv.width,cv.height);
-  state.fmask = document.createElement('canvas'); state.fmask.width=mk.width; state.fmask.height=mk.height;
+  state.fmask = document.createElement('canvas'); state.fmask.width=mk.width; state.fmask.height=mk.height; const _fmctx=state.fmask.getContext('2d'); _fmctx.fillStyle='#fff'; _fmctx.fillRect(0,0,state.fmask.width,state.fmask.height);
 }
 
 /* ===== 2) 偵測（v2 -> v1 回退） ===== */
@@ -273,7 +277,7 @@ $('#btnDetect').addEventListener('click', async ()=>{
     if(!r.ok){ r = await fetch(BASE_URL+'/detect',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({image_id:state.image.id})}); }
     const d = await r.json();
     state.maskVersion = d.mask_version;
-    $('#detectBadge').textContent='完成 ✔';
+    $('#detectBadge').textContent = '完成 ✔' + (d.detector ? `（${({vision:'Vision', opencv:'OpenCV', naive:'naive'})[d.detector] || d.detector}）` : '');
     // 合併遮罩（含綠色鎖定區高亮）
     $('#merged').src = ABS(d.merged_overlay); $('#merged').classList.remove('hidden');
     // 把鎖定遮罩（白=鎖定）讀入 lockLayer 供後續畫/擦
@@ -350,34 +354,56 @@ $('#btnCommitMask').onclick=async()=>{
   $('#maskBadge').textContent='提交中…';
   const fd=new FormData(); fd.append('image_id', state.image.id); 
   // 只提交 lock_mask（不可變動結構），後端會自動反推出 editable
-  const blob = await toBlob(state.lockLayer); fd.append('lock_mask', blob, 'lock.png');
+  // 將白/透明 → 黑白（白=鎖定、黑=可改），去除 alpha，避免不同瀏覽器處理差異
+  const _mask = document.createElement('canvas'); _mask.width=state.lockLayer.width; _mask.height=state.lockLayer.height;
+  const _mx = _mask.getContext('2d'); _mx.drawImage(state.lockLayer,0,0);
+  const _im = _mx.getImageData(0,0,_mask.width,_mask.height); const _dt=_im.data;
+  for(let i=0;i<_dt.length;i+=4){ const a=_dt[i+3]; const v = a>32 ? 255 : 0; _dt[i]=v; _dt[i+1]=v; _dt[i+2]=v; _dt[i+3]=255; }
+  _mx.putImageData(_im,0,0);
+  const blob = await new Promise(res=>_mask.toBlob(res,'image/png'));
+  fd.append('lock_mask', blob, 'lock.png');
   try{
     const r=await fetch(BASE_URL+'/mask/commit',{method:'POST', body:fd});
     const d=await r.json(); state.maskVersion=d.mask_version; $('#maskBadge').textContent='已提交 v'+d.mask_version+' ✔';
   }catch{ $('#maskBadge').textContent='失敗'; alert('提交失敗'); }
 };
 
-/* ===== 5) 生成變體 ===== */
+
+/* ===== 5) 生成變體（逐張串行，立即顯示；每張只送一種風格避免混風格） ===== */
 $('#btnGenerate').onclick = async ()=>{
   if(!state.image) return alert('請先上傳');
   if(!state.maskVersion) return alert('請先完成偵測與遮罩提交');
   if(state.selectedStyles.size===0) return alert('請至少選 1 種風格');
-  $('#genBadge').textContent='生成中…';
-  const body = {
-    image_id: state.image.id,
-    mask_version: state.maskVersion,
-    styles: [...state.selectedStyles],
-    palette: { main: state.palette.main, accents: state.palette.accents },
-    logo: true
-  };
-  try{
-    const r=await fetch(BASE_URL+'/generate',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
-    const d=await r.json();
-    state.variants = d.variants||[]; renderVariants(); $('#genBadge').textContent='完成 ✔';
-    renderCompare();
-    // 初始化 7: 家具編修底圖（顯示所選圖）
-    if(state.variants[0]){ await initFurnitureCanvas(); }
-  }catch{ alert('生成失敗'); $('#genBadge').textContent='失敗'; }
+  $('#genBadge').textContent='生成中…（逐張輸出）';
+
+  // 清空既有結果
+  state.variants = []; renderVariants(); renderCompare();
+
+  const styles = [...state.selectedStyles];
+  for (let i=0; i<styles.length; i++){
+    const st = styles[i];
+    const body = {
+      image_id: state.image.id,
+      mask_version: state.maskVersion,
+      styles: [st], // 只送一種，避免混風格
+      palette: { main: state.palette.main, accents: state.palette.accents },
+      logo: true
+    };
+    try{
+      const r=await fetch(BASE_URL+'/generate',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+      if(!r.ok){ const t=await r.text(); throw new Error('HTTP '+r.status+' '+t); }
+      const d=await r.json();
+      const got = d.variants||[];
+      state.variants.push(...got);
+      renderVariants(); renderCompare();
+      if(!state.selectedResultId && state.variants[0]){ await initFurnitureCanvas(); }
+      $('#genBadge').textContent=`已完成 ${i+1}/${styles.length} 張`;
+    }catch(err){
+      console.error(err);
+      alert(`生成「${st}」失敗：`+err.message);
+    }
+  }
+  $('#genBadge').textContent='完成 ✔';
 };
 
 function renderVariants(){
@@ -394,7 +420,7 @@ function renderVariants(){
       </div>`;
     card.querySelector('.choose').onclick=async ()=>{
       try{
-        await fetch(BASE_URL+'/select',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({image_id:state.image.id, result_id:v.result_id})});
+        const _sel=await fetch(BASE_URL+'/select',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({image_id:state.image.id, result_id:v.result_id})}); if(!_sel.ok){ const t=await _sel.text(); throw new Error('選擇失敗：HTTP '+_sel.status+' '+t); }
         state.selectedResultId=v.result_id;
         $('#btnFurniture').disabled=false;
         // 顯示到家具編修底圖
@@ -443,8 +469,8 @@ window.addEventListener('mouseup', (e)=>{
   const x=Math.min(rectStart.x,p.x), y=Math.min(rectStart.y,p.y), w=Math.abs(p.x-rectStart.x), h=Math.abs(p.y-rectStart.y);
   // 視覺層：畫框
   const vctx = fmk.getContext('2d'); vctx.strokeStyle='#fff'; vctx.lineWidth=2; vctx.setLineDash([8,6]); vctx.strokeRect(x,y,w,h);
-  // mask 層（白=有效）
-  const mctx = state.fmask.getContext('2d'); mctx.fillStyle='#fff'; mctx.fillRect(x,y,w,h);
+  // mask 層（黑=可編修；白=鎖定）
+  const mctx = state.fmask.getContext('2d'); mctx.fillStyle='#000'; mctx.fillRect(x,y,w,h);
   rectStart=null; state.fRectSel=false; fmk.style.pointerEvents='none';
 });
 
@@ -456,7 +482,9 @@ $('#btnFurniture').onclick=async()=>{
   const maskURL = state.fmask.toDataURL('image/png');
   const payload = { image_id:state.image.id, result_id:state.selectedResultId, action:$('#fAction').value, object:$('#fObject').value, color:$('#fColor').value, mask_data_url:maskURL };
   try{
-    const d = await (await fetch(BASE_URL+'/furniture',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)})).json();
+    const _f=await fetch(BASE_URL+'/furniture',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    if(!_f.ok){ const t=await _f.text(); throw new Error('家具操作失敗：HTTP '+_f.status+' '+t); }
+    const d = await _f.json();
     if(!d.ok) throw new Error(d.error||'家具操作失敗');
     // 顯示結果與下載（含 LOGO）
     const box = $('#fResult'); const card=document.createElement('div'); card.className='c-card card-img';

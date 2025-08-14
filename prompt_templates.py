@@ -1,15 +1,11 @@
-
 # -*- coding: utf-8 -*-
 """
-prompt_templates.py — 風格提示詞生成（加強版）
-- 明確限制：只在「透明遮罩區域」inpainting、更換材質/顏色/風格，不改視角/透視/構圖
-- 中英雙語硬性規則，要求輸入輸出尺寸一致且像素對齊
-- 新增固定式家具規則：電視櫃、衣櫃、床頭櫃、書櫃、收納櫃、展示櫃、矮櫃、書桌、餐桌、屏風 → built-in/fixed furniture
+prompt_templates.py — 風格提示詞生成（加強版 2025-08-14 r2）
 """
 import json, re
 from pathlib import Path
 
-BASE_DIR = Path("/mnt/data").resolve()
+BASE_DIR = Path(__file__).parent.resolve()
 STYLES_TABLE = BASE_DIR / "styles_brief_table.json"
 STYLES_TXT   = BASE_DIR / "styles.txt"
 
@@ -118,7 +114,8 @@ def build_style_prompt(style_name: str, colors: dict=None, enforce_hard_rules: b
 
     long_desc = longform.get(style_name, "")
     if long_desc:
-        clean = re.sub(r"\s+", " ", long_desc)[:900]
+        import re as _re
+        clean = _re.sub(r"\s+", " ", long_desc)[:900]
         style_core.append("Style notes (zh): " + clean)
 
     if colors_text:
@@ -127,33 +124,30 @@ def build_style_prompt(style_name: str, colors: dict=None, enforce_hard_rules: b
     hard_rules = []
     if enforce_hard_rules:
         hard_rules = [
-            # Camera & composition locks (zh)
             "【嚴禁變動】相機參數（視角/焦距/透視/地平線/消失點）、構圖框架與畫面邊界的位置。",
             "【嚴禁】裁切、旋轉、縮放、平移整張圖片；所有固定建築構件（樑、柱、牆、門窗框、天花/地坪交界線）之『像素座標』必須保持不變。",
-            # Mask behavior (zh)
             "僅允許在『透明遮罩區域』內進行 inpainting／材質與物件替換；不得越界到不透明區域。",
-            # Object/layout locks (zh)
-            "家具佈局錨點（落地位置/接觸邊）不可改變；允許換材質/款式/顏色，但不得改變位置、尺寸與姿態。",
-            "指定家具：電視櫃、衣櫃、床頭櫃、書櫃、收納櫃、展示櫃、矮櫃、書桌、餐桌、屏風等皆採用『固定式家具』（built-in / fixed furniture），避免可移動或鬆散式家具。",
-            # Lighting (zh)
+            "家具佈局錨點不可改變；允許換材質/款式/顏色，但不得改變位置、尺寸與姿態。",
+            "指定家具：電視櫃、衣櫃、床頭櫃、書櫃、收納櫃、展示櫃、矮櫃、書桌、餐桌、屏風等皆採用『固定式家具』（built-in / fixed furniture）。",
             "維持原始採光方向、陰影方向/長度與光比；不得新增或移動窗/門、燈具位置。",
-            # Output alignment (zh)
             "輸出影像尺寸與輸入相同並像素對齊；不得新增視野或改變房間尺寸。",
-            # English duplicates
-            "Do NOT change camera parameters, field of view, horizon line, vanishing points, or overall composition.",
-            "Do NOT crop, rotate, scale, or translate the image. Keep all architectural edges in the same pixel positions.",
-            "Edit ONLY inside transparent mask regions (inpainting). Do NOT spill edits outside opaque areas.",
-            "Keep furniture anchors (contact points) fixed; change material/style/color only, not position/size/pose.",
-            "For the following, use built-in (fixed) furniture: TV cabinet, wardrobe, bedside cabinet, bookcase, storage cabinet, display cabinet, low cabinet, desk, dining table, and room divider; avoid movable/loose furniture.",
-            "Preserve original lighting direction and shadow behavior; do not add/move windows/doors or luminaires.",
-            "Output must match input resolution and align pixel-to-pixel; do not expand field of view or room size.",
+            "必做：造型天花板＋隱藏式間接燈（燈槽/燈帶），不改變天花實際高度與樑位。",
+            "必做：整面固定式電視牆與 TV 櫃；壁掛或投影 65 吋以上（建議 75 吋）的大尺寸電視，居中、合理視高。",
+            "單一風格純粹：只允許使用指定風格語彙，嚴禁混入其他風格元素。",
+            "Do NOT change camera parameters / FOV / composition. Do NOT crop/rotate/scale/translate. Keep all architectural edges fixed to original pixels.",
+            "Edit ONLY inside transparent mask regions (inpainting). Keep furniture anchors fixed; change materials/style/colors only.",
+            "MANDATORY: feature ceiling + concealed indirect lighting (cove/strip).",
+            "MANDATORY: full-width built-in TV wall/cabinet with a ≥65\" wall-mounted TV or projection surface, centered at realistic height.",
+            "Enforce single-style purity; do not mix styles."
         ]
 
     segments = [
         f"室內設計風格：{style_name} / Interior style: {style_name}",
         *style_core,
+        (colors_text or ""),
         "輸出要求：高真實度材質、正確光影、自然陰影、乾淨收納、避免雜亂與重複圖樣。",
     ]
+    segments = [s for s in segments if s]
     if hard_rules:
         segments.append("硬規則 / Hard Constraints: " + " ".join(hard_rules))
     if extra:
@@ -162,9 +156,6 @@ def build_style_prompt(style_name: str, colors: dict=None, enforce_hard_rules: b
     return "\n".join(segments)
 
 def make_prompt(style, colors):
-    """
-    相容舊呼叫：colors 可為字串（'#112233' 或 '主,配1,配2,配3'）或 dict。
-    """
     if isinstance(colors, dict):
         colors_dict = colors
     else:
