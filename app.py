@@ -1,16 +1,14 @@
 
 # -*- coding: utf-8 -*-
-"""
-完整後端（對齊 index_new.html）
+"""完整後端（對齊 index.html）
 - /upload：上傳圖片（≤2MB）
-- /detect/v2：501 讓前端 fallback
-- /detect：簡易遮罩與綠色覆疊
-- /mask/commit：提交鎖定遮罩（白=鎖定）→ 反推 editable → 更新覆疊
-- /meta/styles：讀 styles_brief_table.json 或 styles.txt
-- /generate：呼叫 dalle_api 依 style + palette 生成（或編輯）1~3 張
-- /select：記錄選擇
-- /compare：回原圖＋變體清單
-- /furniture：指定區塊編修（新增/更換/改色）
+- /detect：OpenCV 偵測鎖定區，輸出白=鎖定與綠色覆疊
+- /mask/commit：提交鎖定遮罩（白=鎖定）→ 更新綠色覆疊
+- /meta/styles：讀取可用風格（若無檔案則提供 13 種預設清單）
+- /generate：依 style + palette 生成（或編輯）1~3 張
+- /select：記錄使用者選擇的變體
+- /compare：回傳原圖與變體清單（含 result_id / style）
+- /furniture：對選定變體進行新增/更換/改色（黑=可編修，白=鎖定）
 """
 import os, io, uuid, json, time, re, base64
 from pathlib import Path
@@ -244,14 +242,114 @@ def detect():
 
 # ---------------- 5) generate ----------------
 # ---------------- meta styles ----------------
+
 @APP.get("/meta/styles")
 def meta_styles():
-    # If you have a file to drive styles, add reading here (e.g., styles.json)
+    """Return style list from local files if present, else 13-style default."""
+    # 1) Try JSON file
+    p_json = ROOT / "styles_brief_table.json"
+    if p_json.exists():
+        try:
+            data = json.loads(p_json.read_text(encoding="utf-8"))
+            if isinstance(data, list) and data:
+                # Normalize objects to {code,name,brief}
+                norm = []
+                for it in data:
+                    if isinstance(it, dict):
+                        code = it.get("code") or it.get("name") or it.get("style") or ""
+                        name = it.get("name") or it.get("code") or code or ""
+                        brief = it.get("brief") or it.get("desc") or ""
+                        norm.append({"code":code, "name":name, "brief":brief})
+                    elif isinstance(it, str):
+                        norm.append({"code":it, "name":it, "brief":""})
+                if norm:
+                    return _ok(styles=norm)
+        except Exception:
+            pass
+    # 2) Try TXT file (one style per line, optional "name|brief")
+    p_txt = ROOT / "styles.txt"
+    if p_txt.exists():
+        try:
+            lines = [ln.strip() for ln in p_txt.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            if lines:
+                norm = []
+                for ln in lines:
+                    if "|" in ln:
+                        name, brief = [x.strip() for x in ln.split("|", 1)]
+                        norm.append({"code":name, "name":name, "brief":brief})
+                    else:
+                        norm.append({"code":ln, "name":ln, "brief":""})
+                return _ok(styles=norm)
+        except Exception:
+            pass
+    # 3) Fallback to built-in 13 styles (aligned with index.html)
     default = [
-        {"code":"北歐風","name":"北歐風","brief":"簡約線條、自然採光、功能導向"},
-        {"code":"現代風","name":"現代風","brief":"幾何分明、極簡收納、玻璃金屬感"},
-        {"code":"地中海風","name":"地中海風","brief":"拱門、白牆、藍白對比"}
-    ]
+  {
+    "code": "北歐風",
+    "name": "北歐風",
+    "brief": "簡約線條、自然採光、功能導向"
+  },
+  {
+    "code": "現代風",
+    "name": "現代風",
+    "brief": "幾何分明、極簡收納、玻璃金屬感"
+  },
+  {
+    "code": "工業風",
+    "name": "工業風",
+    "brief": "外露結構、粗獷材質、深色調"
+  },
+  {
+    "code": "美式鄉村風",
+    "name": "美式鄉村風",
+    "brief": "溫馨木作、經典線板、復古細節"
+  },
+  {
+    "code": "日式侘寂風",
+    "name": "日式侘寂風",
+    "brief": "留白、自然材質、不對稱美"
+  },
+  {
+    "code": "日式禪風",
+    "name": "日式禪風",
+    "brief": "對稱、自然光、簡淨材質"
+  },
+  {
+    "code": "地中海風",
+    "name": "地中海風",
+    "brief": "拱門、白牆、藍白對比"
+  },
+  {
+    "code": "輕奢古典風",
+    "name": "輕奢古典風",
+    "brief": "線板造型、金屬點綴、高雅材質"
+  },
+  {
+    "code": "混搭風",
+    "name": "混搭風",
+    "brief": "多種風格融合、創意布局"
+  },
+  {
+    "code": "鄉村風",
+    "name": "鄉村風",
+    "brief": "粗獷木質、溫暖色調"
+  },
+  {
+    "code": "極簡風",
+    "name": "極簡風",
+    "brief": "空間留白、極簡家具"
+  },
+  {
+    "code": "現代奢華風",
+    "name": "現代奢華風",
+    "brief": "高級材質、大膽色彩"
+  },
+  {
+    "code": "藝術復古風",
+    "name": "藝術復古風",
+    "brief": "藝術感強烈、古典家具"
+  }
+]
     return _ok(styles=default)
 
 @APP.post("/generate")
@@ -346,6 +444,7 @@ def select():
     return _ok(selected=result_id)
 
 # ---------------- 7) compare ----------------
+
 @APP.get("/compare")
 def compare():
     image_id = request.args.get("base")
@@ -356,14 +455,14 @@ def compare():
     base = DATA / image_id / "original.png"
     if base.exists():
         url = _serve_path(image_id, "original.png")
-        items.append({"url": url, "download_url": url})
+        items.append({"url": url, "download_url": url, "tag": "base", "style": "original"})
     meta = _load_meta(image_id)
     for rid in ids:
         info = meta.get("results", {}).get(rid)
-        if not info: 
+        if not info:
             continue
-        url = _serve_path(image_id, info["file"])
-        items.append({"url": url, "download_url": url})
+        url = _serve_path(image_id, info.get("file"))
+        items.append({"url": url, "download_url": url, "result_id": rid, "style": info.get("style")})
     return _ok(items=items)
 
 # ---------------- 8) furniture ----------------
@@ -395,7 +494,6 @@ def furniture():
     mask_path = out_dir / "tmp_furn_mask.png"
 
     if data_url:
-        # 統一最終語意：白=鎖定（alpha=255）、黑=可編輯（alpha=0）
         head, b64 = data_url.split(",", 1)
         import base64 as _b64
         raw = _b64.b64decode(b64)
@@ -403,22 +501,19 @@ def furniture():
             f.write(raw)
         from PIL import Image as _I
         m = _I.open(mask_path).convert("L")
-        # 自動相容：若白像素比例 < 50%（推測舊版白=選區），則反向處理
-        hist = m.histogram()
-        white_cnt = sum(hist[128:])
-        total = m.size[0] * m.size[1]
-        white_ratio = white_cnt / max(1,total)
         rgba = _I.new("RGBA", m.size, (0,0,0,0))
-        if white_ratio < 0.5:
-            # 舊語意（白=選區）→ 白區可編輯(alpha=0)，其他鎖定(alpha=255)
-            a = m.point(lambda v: 0 if v>127 else 255)
-        else:
-            # 新語意（白=鎖定）→ 白區鎖定(alpha=255)，黑區可編輯(alpha=0)
-            a = m.point(lambda v: 255 if v>127 else 0)
+        # Unified semantics: white=locked (alpha=255), black=editable (alpha=0)
+        a = m.point(lambda v: 255 if v>127 else 0)
         rgba.putalpha(a)
         rgba.save(mask_path)
     else:
-        # 未提供選區 → 預設全白（全鎖定，避免誤改）
+        from PIL import Image as _I
+        with _I.open(base_path) as _im:
+            w,h = _im.size
+        rgba = _I.new("RGBA", (w,h), (0,0,0,0))
+        a = _I.new("L", (w,h), 255)  # 255=鎖定（白）
+        rgba.putalpha(a)
+        rgba.save(mask_path)# 未提供選區 → 預設全白（全鎖定，避免誤改）
         from PIL import Image as _I
         with _I.open(base_path) as _im:
             w,h = _im.size

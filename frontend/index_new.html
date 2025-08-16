@@ -79,7 +79,9 @@ const $$ = (q)=> [...document.querySelectorAll(q)];
 const state = {
   image:null, maskVersion:null, lockLayer:null,
   styles:[], selectedStyles:new Set(),
-  palette:{main:'#ffd1dc', accents:['#bfe9ff']},
+  palette: { main:'#ffd1dc', accents:['#bfe9ff'] },
+  roomType:'living',
+  flags:{ HAS_TV_ZONE:true, ALLOW_WET_DRY:false, ALLOW_NEW_FURNITURE:false },
   variants:[], selectedResultId:null,
   fmask:null, mapUrlToId:{}, mapIdToStyle:{}
 };
@@ -96,6 +98,27 @@ const state = {
       <span id="uploadStatus" class="badge">尚未上傳</span>
     </div>
     <img id="preview" class="preview half" alt="預覽">
+    <hr class="c">
+    <div class="toolbar">
+      <label class="pill">空間
+        <select id="roomTypeSel" class="tool" style="margin-left:6px">
+          <option value="living">客廳</option>
+          <option value="bedroom">臥室</option>
+          <option value="study">書房</option>
+          <option value="dining">餐廳</option>
+          <option value="kitchen">廚房</option>
+          <option value="bathroom">衛浴</option>
+          <option value="balcony">陽台</option>
+          <option value="entry">玄關</option>
+          <option value="corridor">走廊</option>
+        </select>
+      </label>
+      <label class="tool" id="flagTv" style="display:inline-flex;align-items:center"><input type="checkbox" id="hasTV" checked> 需要 TV 牆（建立或保留）</label>
+      <label class="tool" id="flagWD" style="display:none;align-items:center"><input type="checkbox" id="allowWD"> 可行乾濕分離</label>
+      <label class="tool" id="flagNewF" style="display:inline-flex;align-items:center"><input type="checkbox" id="allowNewFur"> 空房自動配置基本家具（僅毛胚屋/空房生效）</label>
+    </div>
+    <div class="help">提示：上面的「空房自動配置基本家具」僅在<strong>毛胚屋/空房</strong>、且偵測不到家具錨點時生效；有現有家具時只會換材質/顏色。</div>
+    
   </div>
 
   <div class="c-card">
@@ -451,7 +474,9 @@ $('#btnGenerate').onclick = async ()=>{
   for (let i=0; i<styles.length; i++){
     const st = styles[i];
     const useNoMask = document.querySelector('#noMask')?.checked;
-    const body = { image_id: state.image.id, styles: [st],
+    const body = { room_type: state.roomType,
+ flags: { HAS_TV_ZONE: !!state.flags.HAS_TV_ZONE, ALLOW_WET_DRY: !!state.flags.ALLOW_WET_DRY, ALLOW_NEW_FURNITURE: !!state.flags.ALLOW_NEW_FURNITURE },
+ image_id: state.image.id, styles: [st],
       palette: { main: state.palette.main, accents: state.palette.accents },
       logo: true };
     if(!useNoMask && state.maskVersion){ body.mask_version = state.maskVersion; }
@@ -614,5 +639,48 @@ $('#btnFurniture').onclick=async()=>{
   }catch(err){ console.error(err); alert('家具操作失敗：'+err.message); }
 };
 </script>
+
+<script>
+(function(){
+  function initRoomFlagUI_v3(){
+    const $ = (q)=>document.querySelector(q);
+    const roomSel = $('#roomTypeSel');
+    const hasTV = $('#hasTV'), allowWD = $('#allowWD'), allowNewFur = $('#allowNewFur');
+    const flagTv = $('#flagTv'), flagWD = $('#flagWD'), flagNewF = $('#flagNewF');
+    if(!roomSel) return;
+
+    // initialize state <-> UI
+    if(window.state){
+      if(!window.state.roomType) window.state.roomType = 'living';
+      if(typeof window.state.flags!=='object') window.state.flags = { HAS_TV_ZONE:true, ALLOW_WET_DRY:false, ALLOW_NEW_FURNITURE:false };
+    }
+    if(window.state && window.state.roomType) roomSel.value = window.state.roomType;
+
+    function refreshFlags(){
+      const rt = roomSel.value;
+      if(flagTv) flagTv.style.display = (rt==='living') ? 'inline-flex' : 'none';
+      if(flagWD) flagWD.style.display = (rt==='bathroom') ? 'inline-flex' : 'none';
+      if(flagNewF) flagNewF.style.display = 'inline-flex';
+    }
+
+    roomSel.addEventListener('change', ()=>{ if(window.state) window.state.roomType = roomSel.value; refreshFlags(); });
+    hasTV && hasTV.addEventListener('change', ()=>{ if(window.state) window.state.flags.HAS_TV_ZONE = !!hasTV.checked; });
+    allowWD && allowWD.addEventListener('change', ()=>{ if(window.state) window.state.flags.ALLOW_WET_DRY = !!allowWD.checked; });
+    allowNewFur && allowNewFur.addEventListener('change', ()=>{ if(window.state) window.state.flags.ALLOW_NEW_FURNITURE = !!allowNewFur.checked; });
+
+    // set initial values from state to checkboxes, if present
+    if(window.state && window.state.flags){
+      if(hasTV) hasTV.checked = !!window.state.flags.HAS_TV_ZONE;
+      if(allowWD) allowWD.checked = !!window.state.flags.ALLOW_WET_DRY;
+      if(allowNewFur) allowNewFur.checked = !!window.state.flags.ALLOW_NEW_FURNITURE;
+    }
+
+    refreshFlags();
+  }
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initRoomFlagUI_v3);
+  else initRoomFlagUI_v3();
+})();
+</script>
+
 </body>
 </html>

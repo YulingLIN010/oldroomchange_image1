@@ -79,7 +79,9 @@ const $$ = (q)=> [...document.querySelectorAll(q)];
 const state = {
   image:null, maskVersion:null, lockLayer:null,
   styles:[], selectedStyles:new Set(),
-  palette:{main:'#ffd1dc', accents:['#bfe9ff']},
+  palette: { main:'#ffd1dc', accents:['#bfe9ff'] },
+  roomType:'living',
+  flags:{ HAS_TV_ZONE:true, ALLOW_WET_DRY:false, ALLOW_NEW_FURNITURE:false },
   variants:[], selectedResultId:null,
   fmask:null, mapUrlToId:{}, mapIdToStyle:{}
 };
@@ -472,7 +474,9 @@ $('#btnGenerate').onclick = async ()=>{
   for (let i=0; i<styles.length; i++){
     const st = styles[i];
     const useNoMask = document.querySelector('#noMask')?.checked;
-    const body = { image_id: state.image.id, styles: [st],
+    const body = { room_type: state.roomType,
+ flags: { HAS_TV_ZONE: !!state.flags.HAS_TV_ZONE, ALLOW_WET_DRY: !!state.flags.ALLOW_WET_DRY, ALLOW_NEW_FURNITURE: !!state.flags.ALLOW_NEW_FURNITURE },
+ image_id: state.image.id, styles: [st],
       palette: { main: state.palette.main, accents: state.palette.accents },
       logo: true };
     if(!useNoMask && state.maskVersion){ body.mask_version = state.maskVersion; }
@@ -635,5 +639,48 @@ $('#btnFurniture').onclick=async()=>{
   }catch(err){ console.error(err); alert('家具操作失敗：'+err.message); }
 };
 </script>
+
+<script>
+(function(){
+  function initRoomFlagUI_v3(){
+    const $ = (q)=>document.querySelector(q);
+    const roomSel = $('#roomTypeSel');
+    const hasTV = $('#hasTV'), allowWD = $('#allowWD'), allowNewFur = $('#allowNewFur');
+    const flagTv = $('#flagTv'), flagWD = $('#flagWD'), flagNewF = $('#flagNewF');
+    if(!roomSel) return;
+
+    // initialize state <-> UI
+    if(window.state){
+      if(!window.state.roomType) window.state.roomType = 'living';
+      if(typeof window.state.flags!=='object') window.state.flags = { HAS_TV_ZONE:true, ALLOW_WET_DRY:false, ALLOW_NEW_FURNITURE:false };
+    }
+    if(window.state && window.state.roomType) roomSel.value = window.state.roomType;
+
+    function refreshFlags(){
+      const rt = roomSel.value;
+      if(flagTv) flagTv.style.display = (rt==='living') ? 'inline-flex' : 'none';
+      if(flagWD) flagWD.style.display = (rt==='bathroom') ? 'inline-flex' : 'none';
+      if(flagNewF) flagNewF.style.display = 'inline-flex';
+    }
+
+    roomSel.addEventListener('change', ()=>{ if(window.state) window.state.roomType = roomSel.value; refreshFlags(); });
+    hasTV && hasTV.addEventListener('change', ()=>{ if(window.state) window.state.flags.HAS_TV_ZONE = !!hasTV.checked; });
+    allowWD && allowWD.addEventListener('change', ()=>{ if(window.state) window.state.flags.ALLOW_WET_DRY = !!allowWD.checked; });
+    allowNewFur && allowNewFur.addEventListener('change', ()=>{ if(window.state) window.state.flags.ALLOW_NEW_FURNITURE = !!allowNewFur.checked; });
+
+    // set initial values from state to checkboxes, if present
+    if(window.state && window.state.flags){
+      if(hasTV) hasTV.checked = !!window.state.flags.HAS_TV_ZONE;
+      if(allowWD) allowWD.checked = !!window.state.flags.ALLOW_WET_DRY;
+      if(allowNewFur) allowNewFur.checked = !!window.state.flags.ALLOW_NEW_FURNITURE;
+    }
+
+    refreshFlags();
+  }
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initRoomFlagUI_v3);
+  else initRoomFlagUI_v3();
+})();
+</script>
+
 </body>
 </html>
