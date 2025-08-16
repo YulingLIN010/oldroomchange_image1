@@ -209,6 +209,26 @@ def _room_module(room_type: Optional[str], flags: Optional[Dict[str, Any]]) -> s
     return ""
 
 # --- Builder ---
+
+def _no_movable_rules_block() -> str:
+    """Combined ZH/EN hard rule block forbidding movable items; allow built-ins & surface finishes."""
+    return (
+      "【禁止（可移動式傢俱＋軟裝＋移動家電＋裝飾）】"
+      "沙發、椅、凳、茶几/邊几、書桌/餐桌、斗櫃、展示櫃、電視櫃、書架、鞋櫃、床架/床頭櫃、立燈/桌燈/夾燈、"
+      "地毯、窗簾/百葉/捲簾、枕頭/抱枕/毯子、畫作/相框/海報、鏡子、花盆與植栽、活動屏風、行動家電與落地電視架；"
+      "不得新增/置入/移動/替換。 "
+      "【僅允許（固定式/內建 或 表面材質）】內建電視牆、內建櫃體、廚具、浴櫃、固定照明；"
+      "地坪/牆面/天花/線板/門片/把手/踢腳線等材質與色彩更換；"
+      "不得改變相機/構圖/牆窗門位置尺寸/樑柱/開口/樓板高度/光向/透視/FOV/裁切/旋轉/位移/重構。 "
+      "(EN) FORBIDDEN: add/insert/move/replace any movable furniture/soft goods/portable appliances/decor "
+      "(sofas, chairs, benches, stools, coffee/side tables, desks, dining tables, dressers, display cabinets, TV stands, "
+      "bookshelves, shoe cabinets, bed frames, nightstands, floor/table/clip lamps, rugs, curtains/blinds/shades, "
+      "pillows/cushions/throws, artwork/frames/posters, mirrors, planters/plants, freestanding screens, portable appliances, "
+      "freestanding TV mounts). ONLY ALLOW built-ins/fixed elements/surface finishes; do not change camera/composition, "
+      "walls/windows/doors positions or sizes, beams/columns, openings, slab height, lighting direction, perspective/FOV, "
+      "crop/rotate/translate/rebuild. Final self-check: ensure no movable items appear."
+    )
+
 def build_style_prompt(style_name: str, colors: dict=None,
                        room_type: Optional[str]=None, flags: Optional[Dict[str, Any]]=None,
                        enforce_hard_rules: bool=True, extra: str="") -> str:
@@ -273,6 +293,12 @@ def build_style_prompt(style_name: str, colors: dict=None,
         segments.append("[HARD RULES — HEADER]\n" + _hard_rules_header())
     segments += [s for s in style_palette if s]
     segments += style_core
+    # Insert forbid movable items block when ALLOW_NEW_FURNITURE is False
+    _flags = flags or {}
+    _forbid = _no_movable_rules_block() if not bool(_flags.get('ALLOW_NEW_FURNITURE')) else ''
+    if _forbid:
+        segments.append(_forbid)
+
     segments += task_focus
     if room_seg:
         segments.append(room_seg)
