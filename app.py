@@ -263,6 +263,9 @@ def generate():
     styles = (data.get("styles") or [])[:3]
     mask_version = str(data.get("mask_version") or "")
     palette = data.get("palette") or {}
+    # NEW: read room_type & flags for prompt
+    room_type = (data.get("room_type") or "").strip().lower() or None
+    flags = data.get("flags") or None
     want_logo = bool(data.get("logo", True))
     if not image_id or not styles:
         return _bad("missing image_id or styles")
@@ -296,7 +299,7 @@ def generate():
     meta.setdefault("results", {})
 
     for idx, st in enumerate(styles, 1):
-        prompt = prompt_templates.make_prompt(st, colors)
+        prompt = prompt_templates.make_prompt(st, colors, room_type=room_type, flags=flags)
         try:
             if mask_alpha_path and mask_alpha_path.exists():
                 png_bytes = dalle_api.edit_image_with_mask(str(base_path), str(mask_alpha_path), prompt, size=size, transparent=False)
