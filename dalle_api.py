@@ -11,6 +11,7 @@ from typing import Optional
 from openai import OpenAI
 
 MODEL_NAME = os.getenv("IMAGE_MODEL_NAME", "gpt-image-1")
+IMAGE_QUALITY = os.getenv("IMAGE_QUALITY", "low").strip().lower()
 
 _client: Optional[OpenAI] = None
 def _get_client() -> OpenAI:
@@ -40,6 +41,8 @@ def generate_image(prompt: str, size: str = "1024x1024", transparent: bool = Fal
     def _call():
         client = _get_client()
         params = dict(model=MODEL_NAME, prompt=prompt, size=size, n=1)
+        if IMAGE_QUALITY in ("low","medium","high"):
+            params["quality"] = IMAGE_QUALITY
         if transparent:
             params["background"] = "transparent"
         res = client.images.generate(**params)
@@ -51,6 +54,8 @@ def edit_image_with_mask(image_path: str, mask_path: str, prompt: str, size: str
     def _call():
         client = _get_client()
         params = dict(model=MODEL_NAME, prompt=prompt, size=size, n=1)
+        if IMAGE_QUALITY in ("low","medium","high"):
+            params["quality"] = IMAGE_QUALITY
         if transparent:
             params["background"] = "transparent"
         with open(image_path, "rb") as img_f, open(mask_path, "rb") as mask_f:
@@ -70,6 +75,8 @@ def edit_image_no_mask(image_path: str, prompt: str, size: str = "1024x1024",
     def _call():
         client = _get_client()
         params = dict(model=MODEL_NAME, prompt=prompt, size=size, n=1)
+        if IMAGE_QUALITY in ("low","medium","high"):
+            params["quality"] = IMAGE_QUALITY
         if transparent:
             params["background"] = "transparent"
         with open(image_path, "rb") as img_f:

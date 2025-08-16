@@ -42,6 +42,11 @@ ROOT = Path(__file__).parent
 DATA = ROOT / "data"
 DATA.mkdir(parents=True, exist_ok=True)
 
+# ---- default image config ----
+import os as _os
+_os.environ.setdefault("IMAGE_SIZE", "1536x1024")  # 長方形、不裁切
+_os.environ.setdefault("IMAGE_QUALITY", "low")     # 低畫質，需 dalle_api 支援
+
 # ---------------- helpers ----------------
 def _ok(**kw):
     kw.setdefault("ok", True)
@@ -391,7 +396,7 @@ def generate():
     for i, a in enumerate(accs[:3], 1):
         colors[f"acc{i}"] = a
 
-    size = os.getenv("IMAGE_SIZE", "1024x1024")
+    size = os.getenv("IMAGE_SIZE", "1536x1024")
     variants = []
     meta = _load_meta(image_id)
     meta.setdefault("results", {})
@@ -534,7 +539,7 @@ def furniture():
         prompt += "\\n" + extra
 
     try:
-        png_bytes = dalle_api.edit_image_with_mask(str(base_path), str(mask_path), prompt, size=os.getenv("IMAGE_SIZE","1024x1024"), transparent=False)
+        png_bytes = dalle_api.edit_image_with_mask(str(base_path), str(mask_path), prompt, size=os.getenv("IMAGE_SIZE", "1536x1024"), transparent=False)
     except Exception as e:
         return _bad(f"furniture failed: {e}", 500)
 
