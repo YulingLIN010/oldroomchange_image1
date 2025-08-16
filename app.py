@@ -20,6 +20,10 @@ from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from PIL import Image, ImageOps
 
+# OpenCV / NumPy
+import cv2
+import numpy as np
+
 try:
     import dalle_api
 except Exception:
@@ -129,9 +133,81 @@ def upload():
     return _ok(image_id=image_id, **_img_size(img))
 
 # ---------------- 2) detect ----------------
-@APP.post("/detect/v2")
-def detect_v2():
-    return _bad("vision not configured", 501)
+
+def _opencv_detect_lock(image_path: Path) -> Image.Image:
+    """回傳 PIL Image（L）：白=鎖定"""
+    img = cv2.imread(str(image_path))  # BGR
+    if img is None:
+        raise FileNotFoundError(image_path)
+    H, W = img.shape[:2]
+
+    # 長邊限制 1600，提升速度
+    scale = 1600 / max(H, W) if max(H, W) > 1600 else 1.0
+    if scale < 1.0:
+        img = cv2.resize(img, (int(W*scale), int(H*scale)), interpolation=cv2.INTER_AREA)
+        H, W = img.shape[:2]
+
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    L, A, B = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    L = clahe.apply(L)
+    enh = cv2.cvtColor(cv2.merge([L,A,B]), cv2.COLOR_LAB2BGR)
+
+    gray = cv2.cvtColor(enh, cv2.COLOR_BGR2GRAY)
+    gray_blur = cv2.bilateralFilter(gray, d=7, sigmaColor=50, sigmaSpace=50)
+
+    # 自動 Canny
+    v = np.median(gray_blur)
+    lower = int(max(0, 0.67 * v))
+    upper = int(min(255, 1.33 * v))
+    edges = cv2.Canny(gray_blur, lower, upper)
+
+    # Hough 線段
+    lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=80,
+                            minLineLength=int(min(H,W)*0.10), maxLineGap=12)
+    line_mask = np.zeros((H,W), np.uint8)
+    if lines is not None:
+        for x1,y1,x2,y2 in lines[:,0,:]:
+            dx, dy = abs(x2-x1), abs(y2-y1)
+            if dx == 0 or dy == 0 or min(dx,dy)/max(dx,dy) < 0.2:
+                cv2.line(line_mask, (x1,y1), (x2,y2), 255, thickness=3)
+    line_mask = cv2.dilate(line_mask, cv2.getStructuringElement(cv2.MORPH_RECT,(9,9)), iterations=1)
+
+    # 幾何區塊候選
+    thr = cv2.adaptiveThreshold(gray_blur,255,cv2.ADAPTIVE_THRESH_MEAN_C,cv2.THRESH_BINARY_INV,31,5)
+    filled = cv2.morphologyEx(thr, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT,(9,9)), iterations=2)
+    geom = cv2.bitwise_or(filled, line_mask)
+
+    contours, _ = cv2.findContours(geom, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    lock = np.zeros((H,W), np.uint8)
+    area_img = H*W
+
+    def touches_border(box):
+        x,y,w,h = box
+        return (x <= 2) or (y <= 2) or (x+w >= W-3) or (y+h >= H-3)
+
+    for c in contours:
+        area = cv2.contourArea(c)
+        if area < area_img*0.015:
+            continue
+        x,y,w,h = cv2.boundingRect(c)
+        rect_area = w*h
+        rectangularity = area / max(1,rect_area)
+        ratio = w / max(1.0, h)
+
+        big_touch = (area > area_img*0.05) and touches_border((x,y,w,h))
+        near_rect = (rectangularity > 0.65 and 0.2 < ratio < 5.0)
+        if big_touch or near_rect:
+            cv2.drawContours(lock, [c], -1, 255, thickness=-1)
+
+    lock = cv2.morphologyEx(lock, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT,(7,7)), iterations=1)
+
+    pil = Image.fromarray(lock, mode="L")
+    if scale < 1.0:
+        pil = pil.resize((int(W/scale), int(H/scale)), resample=Image.NEAREST)
+    return pil
+
+
 
 @APP.post("/detect")
 def detect():
@@ -142,80 +218,42 @@ def detect():
     base = DATA / image_id / "original.png"
     if not base.exists():
         return _bad("image not found", 404)
-    im = Image.open(base).convert("RGB")
+    try:
+        lock_img = _opencv_detect_lock(base)
+    except Exception as e:
+        return _bad(f"opencv detect failed: {e}", 500)
+
+    im = Image.open(base).convert("RGBA")
     w, h = im.size
-    gray = ImageOps.grayscale(im)
-    lock = gray.point(lambda v: 255 if v > 210 else 0).convert("L")
     ver = _now_ver()
     out_dir = DATA / image_id
     lock_path = out_dir / f"lock_v{ver}.png"
-    _save(lock, lock_path)
-    # merged overlay
-    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    _save(lock_img, lock_path)
+
+    # merged overlay（綠覆層）
     green = Image.new("RGBA", (w, h), (30, 190, 107, int(0.85*255)))
-    overlay.paste(green, (0, 0), lock)
-    merged = Image.alpha_composite(im.convert("RGBA"), overlay)
+    green.putalpha(lock_img)
+    merged = Image.alpha_composite(im, green)
     merged_path = out_dir / f"merged_v{ver}.png"
     _save(merged, merged_path)
-    return _ok(detector="naive", detector_detail="pil",
+
+    return _ok(detector="opencv",
                mask_version=ver,
                lock_mask=_serve_path(image_id, lock_path.name),
                merged_overlay=_serve_path(image_id, merged_path.name))
 
-# ---------------- 3) mask commit ----------------
-@APP.post("/mask/commit")
-def commit_mask():
-    image_id = request.form.get("image_id")
-    if not image_id:
-        return _bad("missing image_id")
-    file = request.files.get("lock_mask")
-    if not file:
-        return _bad("missing lock_mask")
-    out_dir = DATA / image_id
-    ver = _now_ver()
-    lock_path = out_dir / f"lock_v{ver}.png"
-    lock = Image.open(file.stream).convert("L")
-    lock = lock.point(lambda v: 255 if v > 127 else 0)
-    _save(lock, lock_path)
-    editable = ImageOps.invert(lock)
-    _save(editable, out_dir / f"editable_v{ver}.png")
-    base = Image.open(out_dir / "original.png").convert("RGBA")
-    green = Image.new("RGBA", base.size, (30, 190, 107, int(0.85*255)))
-    green.putalpha(lock)
-    merged = Image.alpha_composite(base, green)
-    merged_path = out_dir / f"merged_v{ver}.png"
-    _save(merged, merged_path)
-    return _ok(mask_version=ver, merged_overlay=_serve_path(image_id, merged_path.name))
-
-# ---------------- 4) styles ----------------
+# ---------------- 5) generate ----------------
+# ---------------- meta styles ----------------
 @APP.get("/meta/styles")
 def meta_styles():
-    table = ROOT / "styles_brief_table.json"
-    txt = ROOT / "styles.txt"
-    styles = []
-    kb_version = int(time.time())
-    try:
-        if table.exists():
-            data = json.loads(table.read_text("utf-8"))
-            for it in data:
-                if isinstance(it, dict) and it.get("name"):
-                    styles.append({"code": it["name"], "name": it["name"], "brief": (it.get("core") or "")})
-            kb_version = int(table.stat().st_mtime)
-        elif txt.exists():
-            raw = txt.read_text("utf-8", errors="ignore")
-            for m in re.finditer(r"^\*([^\n\r]+)", raw, flags=re.M):
-                nm = m.group(1).strip()
-                styles.append({"code": nm, "name": nm})
-            kb_version = int(txt.stat().st_mtime)
-        else:
-            styles = [{"code": "現代風", "name": "現代風", "brief": "俐落、極簡、金屬玻璃"},
-                      {"code": "北歐風", "name": "北歐風", "brief": "自然採光、木質"},
-                      {"code": "工業風", "name": "工業風", "brief": "外露結構、深色材質"}]
-    except Exception as e:
-        return _bad(f"styles error: {e}")
-    return _ok(styles=styles, kb_version=kb_version)
+    # If you have a file to drive styles, add reading here (e.g., styles.json)
+    default = [
+        {"code":"北歐風","name":"北歐風","brief":"簡約線條、自然採光、功能導向"},
+        {"code":"現代風","name":"現代風","brief":"幾何分明、極簡收納、玻璃金屬感"},
+        {"code":"地中海風","name":"地中海風","brief":"拱門、白牆、藍白對比"}
+    ]
+    return _ok(styles=default)
 
-# ---------------- 5) generate ----------------
 @APP.post("/generate")
 def generate():
     if dalle_api is None or prompt_templates is None:
@@ -263,7 +301,7 @@ def generate():
             if mask_alpha_path and mask_alpha_path.exists():
                 png_bytes = dalle_api.edit_image_with_mask(str(base_path), str(mask_alpha_path), prompt, size=size, transparent=False)
             else:
-                png_bytes = dalle_api.generate_image(prompt, size=size, transparent=False)
+                png_bytes = dalle_api.edit_image_no_mask(str(base_path), prompt, size=size, transparent=False)
         except Exception as e:
             return _bad(f"generate failed: {e}", 500)
 
@@ -418,6 +456,38 @@ def furniture():
             url_rel = fname
 
     return _ok(url=_serve_path(image_id, url_rel))
+# ---------------- mask commit ----------------
+@APP.post("/mask/commit")
+def mask_commit():
+    data = request.form or {}
+    image_id = (data.get("image_id") or "").strip()
+    f = request.files.get("lock_mask")
+    if not image_id or not f:
+        return _bad("missing image_id or lock_mask")
+    out_dir = DATA / image_id
+    base = out_dir / "original.png"
+    if not base.exists():
+        return _bad("image not found", 404)
+
+    # Save grayscale (white=lock)
+    ver = _now_ver()
+    lock_path = out_dir / f"lock_v{ver}.png"
+    img = Image.open(f.stream).convert("L")
+    _save(img, lock_path)
+
+    # Build green overlay preview
+    im = Image.open(base).convert("RGBA")
+    w, h = im.size
+    green = Image.new("RGBA", (w, h), (30, 190, 107, int(0.85*255)))
+    green.putalpha(img)
+    merged = Image.alpha_composite(im, green)
+    merged_path = out_dir / f"merged_v{ver}.png"
+    _save(merged, merged_path)
+
+    return _ok(mask_version=ver,
+               lock_mask=_serve_path(image_id, lock_path.name),
+               merged_overlay=_serve_path(image_id, merged_path.name))
+
 
 if __name__ == "__main__":
     APP.run(host="0.0.0.0", port=int(os.getenv("PORT","8080")), debug=True)
