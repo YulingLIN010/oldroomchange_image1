@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """完整後端（對齊 index.html）
 - /upload：上傳圖片（≤2MB）
@@ -44,7 +43,7 @@ DATA.mkdir(parents=True, exist_ok=True)
 
 # ---- default image config ----
 import os as _os
-_os.environ.setdefault("IMAGE_SIZE", "1536x1024")  # 長方形、不裁切
+_os.environ.setdefault("IMAGE_SIZE", "768x512")  # 長方形、不裁切
 _os.environ.setdefault("IMAGE_QUALITY", "low")     # 低畫質，需 dalle_api 支援
 
 # ---------------- helpers ----------------
@@ -396,7 +395,10 @@ def generate():
     for i, a in enumerate(accs[:3], 1):
         colors[f"acc{i}"] = a
 
-    size = os.getenv("IMAGE_SIZE", "1536x1024")
+    # A) 支援 body.size 覆蓋；沒帶就用環境預設
+    req_size = (data.get("size") or "").strip().lower().replace("×", "x")
+    size = req_size if re.match(r"^\d+x\d+$", req_size) else os.getenv("IMAGE_SIZE", "768x512")
+
     variants = []
     meta = _load_meta(image_id)
     meta.setdefault("results", {})
@@ -512,18 +514,12 @@ def furniture():
         rgba.putalpha(a)
         rgba.save(mask_path)
     else:
+        # B) 移除重複：未提供選區 → 建立全白 alpha 遮罩（全鎖定，避免誤改）
         from PIL import Image as _I
         with _I.open(base_path) as _im:
-            w,h = _im.size
-        rgba = _I.new("RGBA", (w,h), (0,0,0,0))
-        a = _I.new("L", (w,h), 255)  # 255=鎖定（白）
-        rgba.putalpha(a)
-        rgba.save(mask_path)# 未提供選區 → 預設全白（全鎖定，避免誤改）
-        from PIL import Image as _I
-        with _I.open(base_path) as _im:
-            w,h = _im.size
-        rgba = _I.new("RGBA", (w,h), (0,0,0,0))
-        a = _I.new("L", (w,h), 255)  # 255=保留（鎖定）
+            w, h = _im.size
+        rgba = _I.new("RGBA", (w, h), (0, 0, 0, 0))
+        a = _I.new("L", (w, h), 255)  # 255=鎖定（白）
         rgba.putalpha(a)
         rgba.save(mask_path)
 
@@ -538,8 +534,12 @@ def furniture():
     if extra:
         prompt += "\\n" + extra
 
+    # A) 支援 body.size 覆蓋；沒帶就用環境預設
+    req_size = (data.get("size") or "").strip().lower().replace("×", "x")
+    size = req_size if re.match(r"^\d+x\d+$", req_size) else os.getenv("IMAGE_SIZE", "768x512")
+
     try:
-        png_bytes = dalle_api.edit_image_with_mask(str(base_path), str(mask_path), prompt, size=os.getenv("IMAGE_SIZE", "1536x1024"), transparent=False)
+        png_bytes = dalle_api.edit_image_with_mask(str(base_path), str(mask_path), prompt, size=size, transparent=False)
     except Exception as e:
         return _bad(f"furniture failed: {e}", 500)
 

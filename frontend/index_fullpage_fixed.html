@@ -3,13 +3,9 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>舊屋換新風格 · 乾淨修正版（游標對齊＋半寬畫布＋比對牆修正）</title>
-
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@700;800;900&family=Noto+Sans+TC:wght@400;700;900&display=swap" rel="stylesheet">
-
+<title>舊屋換新風格 · 乾淨修正版（修正標籤與結構）</title>
 <style>
+/* same styles as embed version */
 :root{
   --pink:#ffd1dc; --mint:#c8f7dc; --lemon:#fff5cc; --sky:#bfe9ff; --ink:#333;
   --bg:#fff; --accent:#ff8fb1; --brand:#ff7aa2; --green:#1ebe6b;
@@ -17,7 +13,7 @@
 }
 *{box-sizing:border-box}
 body{margin:0;padding:14px;background:linear-gradient(180deg,#fff,#fff8fb);
-  font-family:"Nunito","Noto Sans TC",system-ui,-apple-system,"PingFang TC","Microsoft JhengHei",sans-serif;color:var(--ink)}
+  font-family:"Noto Sans TC",system-ui,-apple-system,"PingFang TC","Microsoft JhengHei",sans-serif;color:var(--ink)}
 .wrap{max-width:1100px;margin:0 auto;display:grid;gap:14px}
 .c-card{background:var(--bg); border-radius:var(--radius); box-shadow:var(--shadow); padding:16px; position:relative; overflow:hidden}
 .c-title{font-weight:900; font-size:18px; display:flex; align-items:center; gap:8px}
@@ -35,13 +31,9 @@ hr.c{border:none; height:1px; background:linear-gradient(90deg,#0000,#0002,#0000
 .card-img{position:relative}
 .dl{position:absolute; top:10px; right:10px; text-decoration:none; background:#0008; color:#fff; padding:6px 8px; border-radius:8px; font-weight:800}
 .hidden{display:none}
-
-/* 共用工具列 */
 .toolbar{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .nowrap-group{ display:inline-flex; align-items:center; gap:8px; flex-wrap:nowrap; }
 #accents{ display:inline-flex; align-items:center; gap:6px; }
-
-/* 畫布區 */
 .canvas-wrap{ position:relative; width:100%; }
 .canvas-stack{ position:relative; display:inline-block; width:100%; }
 #editCanvas, #editCursor, #fbaseCanvas, #fmaskCanvas{ display:block; width:100%; height:auto; border-radius:12px; }
@@ -49,49 +41,27 @@ hr.c{border:none; height:1px; background:linear-gradient(90deg,#0000,#0002,#0000
 #editCursor{ position:absolute; left:0; top:0; pointer-events:none; z-index:10 }
 #fmaskCanvas{ position:absolute; left:0; top:0; pointer-events:auto; z-index:5 }
 .legend{position:absolute; left:10px; top:10px; background:#0009; color:#fff; padding:4px 8px; border-radius:8px; font-weight:800}
-
-/* 讓預覽與編輯畫布顯示半寬（不改內部像素，保持對齊） */
 .half{ width:50%!important; max-width:50%!important; }
+#maskBlock{ position: relative; }
+.disabled-block{ pointer-events:none; opacity:.5; filter: grayscale(.2); }
+.disabled-block::after{
+  content:"已勾選「無遮罩（原圖+prompt）」：遮罩流程已停用";
+  position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  font-weight:900; color:#444; background:repeating-linear-gradient(45deg,#f0f0f099 0 10px,#ffffff99 10px 20px);
+  border-radius:12px; text-shadow:0 1px 2px #fff;
+}
 </style>
-
-<script>
-const FALLBACK_STYLES = [
-  {"code":"北歐風","name":"北歐風","brief":"簡約線條、自然採光、功能導向"},
-  {"code":"現代風","name":"現代風","brief":"幾何分明、極簡收納、玻璃金屬感"},
-  {"code":"工業風","name":"工業風","brief":"外露結構、粗獷材質、深色調"},
-  {"code":"美式鄉村風","name":"美式鄉村風","brief":"溫馨木作、經典線板、復古細節"},
-  {"code":"日式侘寂風","name":"日式侘寂風","brief":"留白、自然材質、不對稱美"},
-  {"code":"日式禪風","name":"日式禪風","brief":"對稱、自然光、簡淨材質"},
-  {"code":"地中海風","name":"地中海風","brief":"拱門、白牆、藍白對比"},
-  {"code":"輕奢古典風","name":"輕奢古典風","brief":"線板造型、金屬點綴、高雅材質"},
-  {"code":"混搭風","name":"混搭風","brief":"多種風格融合、創意布局"},
-  {"code":"鄉村風","name":"鄉村風","brief":"粗獷木質、溫暖色調"},
-  {"code":"極簡風","name":"極簡風","brief":"空間留白、極簡家具"},
-  {"code":"現代奢華風","name":"現代奢華風","brief":"高級材質、大膽色彩"},
-  {"code":"藝術復古風","name":"藝術復古風","brief":"藝術感強烈、古典家具"}
-];
-
-(function(){ const _default='https://oldroomchange-image3.onrender.com'; window.API_BASE=window.API_BASE||_default; })();
-const ABS = (u)=> u?.startsWith('http') ? u : (window.API_BASE + u);
-const $  = (q)=> document.querySelector(q);
-const $$ = (q)=> [...document.querySelectorAll(q)];
-
-const state = {
-  image:null, maskVersion:null, lockLayer:null,
-  styles:[], selectedStyles:new Set(),
-  palette: { main:'#ffd1dc', accents:['#bfe9ff'] },
-  roomType:'living',
-  flags:{ HAS_TV_ZONE:true, ALLOW_WET_DRY:false, ALLOW_NEW_FURNITURE:false },
-  variants:[], selectedResultId:null,
-  fmask:null, mapUrlToId:{}, mapIdToStyle:{}
-};
-</script>
 </head>
 <body>
 <div class="wrap" id="app">
+  <!-- Inject the same markup from embed version -->
+  
 
+<div class="wrap" id="app">
+
+  <!-- ① 上傳區 -->
   <div class="c-card">
-    <div class="c-title"><span class="b">①</span> 上傳舊屋照片（≤2MB）</div>
+    <div class="c-title"><span class="b">①</span> 請上傳舊屋或毛坯屋(空屋)照片（≤2MB）</div>
     <div class="help">選檔後立即預覽。若 >2MB 會自動壓縮後再上傳。</div>
     <div class="toolbar" style="margin:8px 0;">
       <label class="tool">📷 選擇檔案 <input id="file" type="file" accept="image/png,image/jpeg" style="display:none"></label>
@@ -118,48 +88,46 @@ const state = {
       <label class="tool" id="flagNewF" style="display:inline-flex;align-items:center"><input type="checkbox" id="allowNewFur"> 空房自動配置基本家具（僅毛胚屋/空房生效）</label>
     </div>
     <div class="help">提示：上面的「空房自動配置基本家具」僅在<strong>毛胚屋/空房</strong>、且偵測不到家具錨點時生效；有現有家具時只會換材質/顏色。</div>
-    
   </div>
 
+  <!-- ② 遮罩 / 無遮罩 -->
   <div class="c-card">
-    <div class="c-title"><span class="b">②</span> 自動結構＋深度偵測</div>
-    <div class="toolbar">
-      <button id="btnDetect" class="btn">🔍 偵測梁柱牆門窗</button>
-      <span id="detectBadge" class="badge">待偵測</span>
-    </div>
-    <hr class="c">
-    <div class="help">完成後顯示 <b>合併遮罩</b> 與鎖定區（綠）預覽。</div>
+    <div class="c-title"><span class="b">②</span> 請選擇"無遮罩"方式生圖或"遮罩"方式生圖</div>
     <div class="toolbar">
       <label class="tool"><input type="checkbox" id="noMask" checked> 無遮罩（原圖+prompt）</label>
-      <span class="help">勾選後可略過偵測與遮罩，直接用原圖＋提示詞進行生成。</span>
+      <span class="help">建議先用「無遮罩」快速生圖；若要效果更好，再切換到「遮罩方式」進行偵測與手動修正。</span>
     </div>
-    <div class="toolbar">
-    </div>
-    <img id="merged" class="preview half hidden" alt="合併遮罩">
-  </div>
-
-  <div class="c-card">
-    <div class="c-title"><span class="b">③</span> 遮罩最後修正（畫<b style="color:#1ebe6b">綠</b>=不可變動）</div>
-    <div class="help">畫布顯示半寬，游標與落筆位置 1:1 對齊。</div>
-    <div class="toolbar">
-      <button class="tool" id="toolDraw">🖌️ 繪製（綠）</button>
-      <button class="tool" id="toolErase">🧽 橡皮擦</button>
-      <label class="tool">筆刷<input id="brush" type="range" min="6" max="60" value="22" style="vertical-align:middle"></label>
-      <button id="btnUndo" class="tool">↩︎ 復原</button>
-      <button id="btnCommitMask" class="btn">✅ 送出最終遮罩</button>
-      <span id="maskBadge" class="badge">未提交</span>
-    </div>
-    <div class="canvas-wrap">
-      <div class="canvas-stack half" id="editStack">
-        <canvas id="editCanvas" height="0"></canvas>
-        <canvas id="editCursor" height="0"></canvas>
+    <hr class="c">
+    <div id="maskBlock">
+      <div class="toolbar">
+        <button id="btnDetect" class="btn">🔍 偵測梁柱牆門窗</button>
+        <span id="detectBadge" class="badge">待偵測</span>
       </div>
+      <div class="help">可先<b>自動偵測梁柱牆線門窗遮罩</b>，再進行<b>手動修正遮罩</b>（也可跳過自動偵測直接手動畫遮罩）。完成後會顯示<b>合併遮罩預覽</b>。</div>
+      <img id="merged" class="preview half hidden" alt="合併遮罩">
+      <div class="help">畫布顯示半寬，游標與落筆位置 1:1 對齊。</div>
+      <div class="toolbar">
+        <button class="tool" id="toolDraw">🖌️ 繪製（綠）</button>
+        <button class="tool" id="toolErase">🧽 橡皮擦</button>
+        <label class="tool">筆刷<input id="brush" type="range" min="6" max="60" value="22" style="vertical-align:middle"></label>
+        <button id="btnUndo" class="tool">↩︎ 復原</button>
+        <button id="btnCommitMask" class="btn">✅ 送出最終遮罩</button>
+        <span id="maskBadge" class="badge">未提交</span>
+      </div>
+      <div class="canvas-wrap">
+        <div class="canvas-stack half" id="editStack">
+          <canvas id="editCanvas" height="0"></canvas>
+          <canvas id="editCursor" height="0"></canvas>
+        </div>
+      </div>
+      <div class="help">標示：綠色覆疊＝鎖定不可變動（資料層＝白:鎖定／透明:可改）。</div>
     </div>
-    <div class="help">標示：綠色覆疊＝鎖定不可變動（資料層＝白:鎖定／透明:可改）。</div>
   </div>
 
+  <!-- ③ 風格與顏色 -->
   <div class="c-card">
-    <div class="c-title"><span class="b">④</span> 選風格（≤3）與色卡（1主＋1~3配）</div>
+    <div class="c-title"><span class="b">③</span> 請選擇風格與顏色</div>
+    <div class="help">可選 1~3 種不同風格</div>
     <div id="styleList" class="grid-3"></div>
     <hr class="c">
     <div class="toolbar">
@@ -174,28 +142,32 @@ const state = {
     </div>
   </div>
 
+  <!-- ④ 生成 -->
   <div class="c-card">
-    <div class="c-title"><span class="b">⑤</span> 生成 1–3 張新風格圖（gpt-image-1）</div>
+    <div class="c-title"><span class="b">④</span> 自動生成新風格圖</div>
     <div class="toolbar">
       <button id="btnGenerate" class="btn">🌟 開始生成</button>
       <span id="genBadge" class="badge">待生成</span>
     </div>
+    <div class="help">生圖 1 張約 1 分鐘，請耐心等待。</div>
     <div id="variants" class="grid-3" style="margin-top:10px"></div>
   </div>
 
+  <!-- ⑤ 比對牆 -->
   <div class="c-card">
-    <div class="c-title"><span class="b">⑥</span> 四格比對牆（原圖＋最多 3 張變體）</div>
+    <div class="c-title"><span class="b">⑤</span> 風格圖比對牆（原圖＋新風格圖）</div>
     <div id="compare" class="grid-3" style="margin-top:10px"></div>
     <div class="help">每格右上角 ⬇︎ 可下載（皆含壹宅 LOGO）。</div>
     <div class="toolbar" style="margin-top:8px">
       <button id="btnGrid" class="btn">🧩 下載 2×2 合併圖</button>
-      <span class="help">將「原圖＋最多 3 張變體」合併成單張 PNG。</span>
+      <span class="help">將「原圖＋新風格圖」合併成單張 PNG。</span>
     </div>
   </div>
 
+  <!-- ⑥ 家具編修 -->
   <div class="c-card">
-    <div class="c-title"><span class="b">⑦</span> 家具編修（先在⑥選一張）</div>
-    <div class="help">先在上一步<b>點選一張喜歡的風格圖</b>。之後用畫筆描出要編修的範圍（黑=可編修、白=鎖定）。</div>
+    <div class="c-title"><span class="b">⑥</span> 修改家具（請先在⑤選一張喜歡的風格）</div>
+    <div class="help">請先在⑤<b>風格圖比對牆</b>選擇一張喜歡的風格圖。之後用畫筆描出要編修的範圍（黑=可編修、白=鎖定）。</div>
     <div class="toolbar">
       <div class="seg" id="fActionSeg">
         <button data-act="add" class="tool active">新增</button>
@@ -232,6 +204,43 @@ const state = {
   </div>
 
 </div>
+
+
+</div>
+
+<!-- Scripts (same as embed) -->
+ after markup to ensure DOM is present -->
+<script>
+const FALLBACK_STYLES = [
+  {"code":"北歐風","name":"北歐風","brief":"簡約線條、自然採光、功能導向"},
+  {"code":"現代風","name":"現代風","brief":"幾何分明、極簡收納、玻璃金屬感"},
+  {"code":"工業風","name":"工業風","brief":"外露結構、粗獷材質、深色調"},
+  {"code":"美式鄉村風","name":"美式鄉村風","brief":"溫馨木作、經典線板、復古細節"},
+  {"code":"日式侘寂風","name":"日式侘寂風","brief":"留白、自然材質、不對稱美"},
+  {"code":"日式禪風","name":"日式禪風","brief":"對稱、自然光、簡淨材質"},
+  {"code":"地中海風","name":"地中海風","brief":"拱門、白牆、藍白對比"},
+  {"code":"輕奢古典風","name":"輕奢古典風","brief":"線板造型、金屬點綴、高雅材質"},
+  {"code":"混搭風","name":"混搭風","brief":"多種風格融合、創意布局"},
+  {"code":"鄉村風","name":"鄉村風","brief":"粗獷木質、溫暖色調"},
+  {"code":"極簡風","name":"極簡風","brief":"空間留白、極簡家具"},
+  {"code":"現代奢華風","name":"現代奢華風","brief":"高級材質、大膽色彩"},
+  {"code":"藝術復古風","name":"藝術復古風","brief":"藝術感強烈、古典家具"}
+];
+(function(){ const _default='https://oldroomchange-image3.onrender.com'; window.API_BASE=window.API_BASE||_default; })();
+const ABS = (u)=> u?.startsWith('http') ? u : (window.API_BASE + u);
+const $  = (q)=> document.querySelector(q);
+const $$ = (q)=> [...document.querySelectorAll(q)];
+const state = {
+  image:null, maskVersion:null, lockLayer:null,
+  styles:[], selectedStyles:new Set(),
+  palette: { main:'#ffd1dc', accents:['#bfe9ff'] },
+  roomType:'living',
+  flags:{ HAS_TV_ZONE:true, ALLOW_WET_DRY:false, ALLOW_NEW_FURNITURE:false },
+  variants:[], selectedResultId:null,
+  fmask:null, mapUrlToId:{}, mapIdToStyle:{}
+};
+window.state = state;
+</script>
 
 <script>
 function loadImage(src){ return new Promise((res,rej)=>{ const i=new Image(); i.crossOrigin="anonymous"; i.onload=()=>res(i); i.onerror=rej; i.src=src; }); }
@@ -510,11 +519,11 @@ function renderVariants(){
     card.innerHTML = `<div class="card-img">
         <img src="${url}" class="preview" alt="${v.style||''}">
         <a class="dl" href="${url}" download>⬇︎</a>
-      </div>
+</div>
       <div class="toolbar" style="margin-top:8px">
         <span class="badge">style: ${v.style||'-'}</span>
-        <span class="help">請到「⑥ 四格比對牆」選擇此圖</span>
-      </div>`;
+        <span class="help">請到「⑤ 風格圖比對牆」選擇此圖</span>
+</div>`;
     card.querySelector('.dl').addEventListener('click', (e)=>{ e.preventDefault(); forceDownload(url, filename); });
     box.appendChild(card);
   });
@@ -543,7 +552,7 @@ async function renderCompare(){
         <div class="toolbar" style="margin-top:8px">
           <button class="btn select-btn"${(isOriginal||!rid)?' disabled':''}>✅ 選擇此圖</button>
           <span class="badge">${isOriginal?'原圖':'style: '+styleText}</span>
-        </div>`;
+</div>`;
       cell.querySelector('.dl').addEventListener('click',(e)=>{ e.preventDefault(); forceDownload(imgURL, fileName); });
 
       const sel = cell.querySelector('.select-btn');
@@ -620,7 +629,7 @@ fmk.addEventListener('touchmove', e=>{ if(!e.touches.length||!fDrawing) return; 
 fmk.addEventListener('touchend', ()=>{ fDrawing=false; }, {passive:true});
 
 $('#btnFurniture').onclick=async()=>{
-  if(!state.selectedResultId) return alert('請先在⑥選擇一張變體');
+  if(!state.selectedResultId) return alert('請先在⑤選擇一張風格圖');
   const any = state.fmask.getContext('2d').getImageData(0,0,state.fmask.width,state.fmask.height).data.some(v=>v!==255);
   if(!any){ const mctx=state.fmask.getContext('2d'); mctx.fillStyle='#000'; mctx.fillRect(0,0,state.fmask.width,state.fmask.height); }
   const maskURL = state.fmask.toDataURL('image/png');
@@ -658,8 +667,25 @@ $('#btnFurniture').onclick=async()=>{
 
     function refreshFlags(){
       const rt = roomSel.value;
-      if(flagTv) flagTv.style.display = (rt==='living') ? 'inline-flex' : 'none';
-      if(flagWD) flagWD.style.display = (rt==='bathroom') ? 'inline-flex' : 'none';
+      // TV 牆選項：僅客廳顯示，其它空間自動關閉並同步 state
+      if(flagTv){
+        const showTv = (rt === 'living');
+        flagTv.style.display = showTv ? 'inline-flex' : 'none';
+        if(!showTv && hasTV){
+          hasTV.checked = false;
+          if(window.state && window.state.flags) window.state.flags.HAS_TV_ZONE = false;
+        }
+      }
+      // 乾濕分離：僅衛浴顯示，其它空間自動關閉並同步 state
+      if(flagWD){
+        const showWD = (rt === 'bathroom');
+        flagWD.style.display = showWD ? 'inline-flex' : 'none';
+        if(!showWD && allowWD){
+          allowWD.checked = false;
+          if(window.state && window.state.flags) window.state.flags.ALLOW_WET_DRY = false;
+        }
+      }
+      // 自動配家具：所有空間顯示（僅空屋時後端才會採用）
       if(flagNewF) flagNewF.style.display = 'inline-flex';
     }
 
@@ -679,6 +705,28 @@ $('#btnFurniture').onclick=async()=>{
   }
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initRoomFlagUI_v3);
   else initRoomFlagUI_v3();
+})();
+</script>
+
+<script>
+(function(){
+  function $(q){ return document.querySelector(q); }
+  function toggleMaskBlock(){
+    const noMask = $('#noMask');
+    const block = $('#maskBlock');
+    if(!block || !noMask) return;
+    const disabled = !!noMask.checked;
+    block.classList.toggle('disabled-block', disabled);
+    ['btnDetect','toolDraw','toolErase','brush','btnUndo','btnCommitMask'].forEach(id=>{
+      const el = document.getElementById(id);
+      if(el){ el.disabled = disabled; }
+    });
+  }
+  document.addEventListener('DOMContentLoaded', function(){
+    const noMask = $('#noMask');
+    if(noMask){ noMask.addEventListener('change', toggleMaskBlock); }
+    toggleMaskBlock();
+  });
 })();
 </script>
 

@@ -85,6 +85,8 @@ const state = {
   variants:[], selectedResultId:null,
   fmask:null, mapUrlToId:{}, mapIdToStyle:{}
 };
+
+window.state = state;
 </script>
 </head>
 <body>
@@ -657,11 +659,28 @@ $('#btnFurniture').onclick=async()=>{
     if(window.state && window.state.roomType) roomSel.value = window.state.roomType;
 
     function refreshFlags(){
-      const rt = roomSel.value;
-      if(flagTv) flagTv.style.display = (rt==='living') ? 'inline-flex' : 'none';
-      if(flagWD) flagWD.style.display = (rt==='bathroom') ? 'inline-flex' : 'none';
-      if(flagNewF) flagNewF.style.display = 'inline-flex';
+  const rt = roomSel.value;
+  // TV 牆選項：僅客廳顯示，其它空間自動關閉並同步 state
+  if(flagTv){
+    const showTv = (rt === 'living');
+    flagTv.style.display = showTv ? 'inline-flex' : 'none';
+    if(!showTv && hasTV){
+      hasTV.checked = false;
+      if(window.state && window.state.flags) window.state.flags.HAS_TV_ZONE = false;
     }
+  }
+  // 乾濕分離：僅衛浴顯示，其它空間自動關閉並同步 state
+  if(flagWD){
+    const showWD = (rt === 'bathroom');
+    flagWD.style.display = showWD ? 'inline-flex' : 'none';
+    if(!showWD && allowWD){
+      allowWD.checked = false;
+      if(window.state && window.state.flags) window.state.flags.ALLOW_WET_DRY = false;
+    }
+  }
+  // 自動配家具：所有空間顯示（僅空屋時後端才會採用）
+  if(flagNewF) flagNewF.style.display = 'inline-flex';
+}
 
     roomSel.addEventListener('change', ()=>{ if(window.state) window.state.roomType = roomSel.value; refreshFlags(); });
     hasTV && hasTV.addEventListener('change', ()=>{ if(window.state) window.state.flags.HAS_TV_ZONE = !!hasTV.checked; });
