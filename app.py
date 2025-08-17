@@ -43,7 +43,7 @@ DATA.mkdir(parents=True, exist_ok=True)
 
 # ---- default image config ----
 import os as _os
-_os.environ.setdefault("IMAGE_SIZE", "768x512")  # 長方形、不裁切
+_os.environ.setdefault("IMAGE_SIZE", "1536x1024")  # 長方形、不裁切
 _os.environ.setdefault("IMAGE_QUALITY", "low")     # 低畫質，需 dalle_api 支援
 
 # ---------------- helpers ----------------
@@ -397,7 +397,7 @@ def generate():
 
     # A) 支援 body.size 覆蓋；沒帶就用環境預設
     req_size = (data.get("size") or "").strip().lower().replace("×", "x")
-    size = req_size if re.match(r"^\d+x\d+$", req_size) else os.getenv("IMAGE_SIZE", "768x512")
+    size = req_size if re.match(r"^\d+x\d+$", req_size) else os.getenv("IMAGE_SIZE", "1536x1024")
 
     variants = []
     meta = _load_meta(image_id)
@@ -536,7 +536,7 @@ def furniture():
 
     # A) 支援 body.size 覆蓋；沒帶就用環境預設
     req_size = (data.get("size") or "").strip().lower().replace("×", "x")
-    size = req_size if re.match(r"^\d+x\d+$", req_size) else os.getenv("IMAGE_SIZE", "768x512")
+    size = req_size if re.match(r"^\d+x\d+$", req_size) else os.getenv("IMAGE_SIZE", "1536x1024")
 
     try:
         png_bytes = dalle_api.edit_image_with_mask(str(base_path), str(mask_path), prompt, size=size, transparent=False)
