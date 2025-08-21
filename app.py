@@ -7,7 +7,6 @@
 - /generate：依 style + palette 生成（或編輯）1~3 張
 - /select：記錄使用者選擇的變體
 - /compare：回傳原圖與變體清單（含 result_id / style）
-- /furniture：對選定變體進行新增/更換/改色（黑=可編修，白=鎖定）
 """
 import os, io, uuid, json, time, re, base64
 from pathlib import Path
@@ -472,94 +471,8 @@ def compare():
         items.append({"url": url, "download_url": url, "result_id": rid, "style": info.get("style")})
     return _ok(items=items)
 
-# ---------------- 8) furniture ----------------
-
-@APP.post("/furniture")
-def furniture():
-    if dalle_api is None or prompt_templates is None:
-        return _bad("image backend not configured", 503)
-    data = request.get_json(silent=True) or {}
-    image_id = data.get("image_id")
-    result_id = data.get("result_id")
-    action = (data.get("action") or "add").lower()
-    obj = data.get("object") or ""
-    color = data.get("color") or ""
-    name = data.get("name") or ""
-    location = data.get("location") or ""
-    style_hint = data.get("style_hint") or ""
-    data_url = data.get("mask_data_url")
-    if not image_id or not result_id:
-        return _bad("missing image_id or result_id")
-
-    meta = _load_meta(image_id)
-    info = meta.get("results", {}).get(result_id)
-    if not info:
-        return _bad("result not found", 404)
-
-    base_path = DATA / image_id / info["file"]
-    out_dir = DATA / image_id
-    mask_path = out_dir / "tmp_furn_mask.png"
-
-    if data_url:
-        head, b64 = data_url.split(",", 1)
-        import base64 as _b64
-        raw = _b64.b64decode(b64)
-        with open(mask_path, "wb") as f:
-            f.write(raw)
-        from PIL import Image as _I
-        m = _I.open(mask_path).convert("L")
-        rgba = _I.new("RGBA", m.size, (0,0,0,0))
-        # Unified semantics: white=locked (alpha=255), black=editable (alpha=0)
-        a = m.point(lambda v: 255 if v>127 else 0)
-        rgba.putalpha(a)
-        rgba.save(mask_path)
-    else:
-        # B) 移除重複：未提供選區 → 建立全白 alpha 遮罩（全鎖定，避免誤改）
-        from PIL import Image as _I
-        with _I.open(base_path) as _im:
-            w, h = _im.size
-        rgba = _I.new("RGBA", (w, h), (0, 0, 0, 0))
-        a = _I.new("L", (w, h), 255)  # 255=鎖定（白）
-        rgba.putalpha(a)
-        rgba.save(mask_path)
-
-    verb = {"add":"add furniture", "swap":"replace furniture", "recolor":"recolor objects", "remove":"remove furniture and reconstruct background"}.get(action,"edit")
-    extra = f"{verb}: {name or obj} {color}".strip()
-    if location:
-        extra += f"; placement: {location}"
-    if style_hint:
-        extra += f"; furniture style: {style_hint}"
-    base_style = info.get("style") or "modern"
-    prompt = prompt_templates.make_prompt(base_style, None)
-    if extra:
-        prompt += "\\n" + extra
-
-    # A) 支援 body.size 覆蓋；沒帶就用環境預設
-    req_size = (data.get("size") or "").strip().lower().replace("×", "x")
-    size = req_size if re.match(r"^\d+x\d+$", req_size) else os.getenv("IMAGE_SIZE", "1536x1024")
-
-    try:
-        png_bytes = dalle_api.edit_image_with_mask(str(base_path), str(mask_path), prompt, size=size, transparent=False)
-    except Exception as e:
-        return _bad(f"furniture failed: {e}", 500)
-
-    ver = _now_ver()
-    fname = f"furn_v{ver}.png"
-    fpath = out_dir / fname
-    with open(fpath, "wb") as f:
-        f.write(png_bytes)
-
-    url_rel = fname
-    if image_logo is not None:
-        logo_path = os.getenv("LOGO_PATH", str(ROOT / "static/logo/LOGO.png"))
-        try:
-            out_with_logo = image_logo.add_logo(str(fpath), logo_path=logo_path, margin_ratio=0.02, logo_ratio=0.15)
-            url_rel = Path(out_with_logo).name
-        except Exception:
-            url_rel = fname
-
-    return _ok(url=_serve_path(image_id, url_rel))
 # ---------------- mask commit ----------------
+
 @APP.post("/mask/commit")
 def mask_commit():
     data = request.form or {}
